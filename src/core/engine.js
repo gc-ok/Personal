@@ -1,0 +1,381 @@
+// src/core/engine.js
+
+// --- Time Utilities (Can be moved to src/utils/time.js later) ---
+const toMins = t => { if (!t) return 480; const [h, m] = t.split(":").map(Number); return h * 60 + m; };
+const toTime = mins => {
+  const h = Math.floor(mins / 60) % 24;
+  const m = Math.floor(mins % 60);
+  const ampm = h >= 12 ? "PM" : "AM";
+  const h12 = h > 12 ? h - 12 : h === 0 ? 12 : h;
+  return `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
+};
+
+// --- Structured Logger ---
+class StructuredLogger {
+  constructor() {
+    this.logs = [];
+    this.placementHistory = [];
+  }
+
+  info(msg, data = null) {
+    this.logs.push({ timestamp: Date.now(), level: "INFO", msg, data });
+  }
+
+  warn(msg, data = null) {
+    this.logs.push({ timestamp: Date.now(), level: "WARN", msg, data });
+  }
+
+  error(msg, data = null) {
+    this.logs.push({ timestamp: Date.now(), level: "ERROR", msg, data });
+  }
+
+  // New: Logs the detailed cost evaluation of the greedy loop
+  logPlacement(section, period, finalCost, evaluations) {
+    this.placementHistory.push({
+      sectionId: section.id,
+      course: section.courseName,
+      assignedPeriod: period,
+      costScore: finalCost,
+      evaluations: evaluations, // Array of why other periods failed or cost more
+      status: "SUCCESS"
+    });
+  }
+
+  logFailure(section, evaluations) {
+    this.placementHistory.push({
+      sectionId: section.id,
+      course: section.courseName,
+      evaluations: evaluations, // Shows exactly which constraints blocked every period
+      status: "FAILED"
+    });
+    this.error(`Gridlock: Failed to place ${section.courseName} S${section.sectionNum}`);
+  }
+}
+
+// --- Main Scheduling Engine ---
+export function generateSchedule(config) {
+  const {
+    teachers = [], courses = [], rooms = [], constraints = [],
+    lunchConfig = {}, winConfig = {}, planPeriodsPerDay = 1,
+    studentCount = 800, maxClassSize = 30,
+    schoolStart = "08:00", schoolEnd = "15:00",
+    passingTime = 5, scheduleMode = "period_length",
+    periods = [],
+  } = config;
+
+  const logger = new StructuredLogger();
+  const conflicts = [];
+
+  logger.info("🚀 Starting Robust Schedule Generation...", { mode: scheduleMode });
+
+  // 1. Setup Periods
+  let finalPeriodLength = config.periodLength || 50;
+  let periodList = [];
+
+  if (periods && periods.length > 0) {
+    periodList = periods.map(p => ({ ...p, type: "class" }));
+  } else {
+    const periodCount = config.periodsCount || 7;
+    let currentMin = toMins(schoolStart);
+    
+    if (scheduleMode === "time_frame") {
+      const startMins = toMins(schoolStart);
+      const endMins = toMins(schoolEnd);
+      const totalMinutes = endMins - startMins;
+      const totalPassing = (periodCount - 1) * passingTime;
+      const available = Math.max(0, totalMinutes - totalPassing);
+      finalPeriodLength = Math.floor(available / periodCount);
+    }
+
+    for (let i = 1; i <= periodCount; i++) {
+      periodList.push({
+        id: i, label: `Period ${i}`, type: "class",
+        startMin: currentMin, endMin: currentMin + finalPeriodLength,
+        startTime: toTime(currentMin), endTime: toTime(currentMin + finalPeriodLength),
+        duration: finalPeriodLength
+      });
+      currentMin += finalPeriodLength + passingTime;
+    }
+  }
+
+  const lunchPid = lunchConfig.lunchPeriod; 
+  const isSplitLunch = lunchConfig.style === "split";
+  const lunchDuration = lunchConfig.lunchDuration || 30;
+  const numWaves = lunchConfig.numWaves || 3;
+  const minClassTime = lunchConfig.minClassTime || 30;
+  const winPid = winConfig.enabled ? winConfig.winPeriod : null;
+
+  periodList = periodList.map(p => {
+    let type = "class";
+    if (p.id === lunchPid) {
+      type = isSplitLunch ? "split_lunch" : "unit_lunch";
+      if (isSplitLunch) {
+        const cafeteriaReq = lunchDuration * numWaves;
+        const pedagogicalReq = minClassTime + lunchDuration;
+        const required = Math.max(cafeteriaReq, pedagogicalReq);
+        if (p.duration < (required - 2)) {
+          conflicts.push({ type: "coverage", message: `CRITICAL: Period ${p.id} is ${p.duration}m. Needs ${required}m to satisfy cafeteria & learning constraints.` });
+        }
+      }
+    } else if (p.id === winPid) {
+      type = "win";
+    }
+    return { ...p, type };
+  });
+
+  const teachingPeriods = periodList;
+  const teachingPeriodIds = teachingPeriods.map(p => p.id);
+  const numTeachingPeriods = teachingPeriodIds.length;
+
+  // 2. Setup Resources (Rooms, Teachers, Blocked times)
+  const teacherHomeRoom = {};
+  const regularRooms = rooms.filter(r => r.type === "regular");
+  const labRooms = rooms.filter(r => r.type === "lab");
+  const gymRooms = rooms.filter(r => r.type === "gym");
+  let rIdx = 0, lIdx = 0;
+
+  const sortedTeachers = [...teachers].sort((a, b) => {
+    const aSci = (a.departments || []).some(d => d.includes("science"));
+    const bSci = (b.departments || []).some(d => d.includes("science"));
+    return bSci - aSci;
+  });
+
+  sortedTeachers.forEach(t => {
+    const isLab = (t.departments || []).some(d => d.includes("science"));
+    const isGym = (t.departments || []).some(d => d.toLowerCase().includes("pe"));
+    if (isLab && labRooms.length > 0) { teacherHomeRoom[t.id] = labRooms[lIdx % labRooms.length].id; lIdx++; } 
+    else if (isGym && gymRooms.length > 0) { teacherHomeRoom[t.id] = gymRooms[0].id; } 
+    else if (regularRooms.length > 0) { if (rIdx < regularRooms.length) { teacherHomeRoom[t.id] = regularRooms[rIdx].id; rIdx++; } }
+  });
+
+  const teacherSchedule = {};
+  const teacherBlocked = {};
+  const roomSchedule = {};
+  teachers.forEach(t => { teacherSchedule[t.id] = {}; teacherBlocked[t.id] = new Set(); });
+  rooms.forEach(r => { roomSchedule[r.id] = {}; });
+
+  if (!isSplitLunch && lunchPid) {
+    teachers.forEach(t => { teacherSchedule[t.id][lunchPid] = "LUNCH"; teacherBlocked[t.id].add(lunchPid); });
+  }
+
+  constraints.forEach(c => {
+    if (c.type === "teacher_unavailable") teacherBlocked[c.teacherId]?.add(parseInt(c.period));
+  });
+
+  // 3. Generate Sections
+  const sections = [];
+  const coreCourses = courses.filter(c => c.required);
+  const electiveCourses = courses.filter(c => !c.required);
+  const coreCount = coreCourses.length;
+  
+  const effectiveSlots = isSplitLunch ? numTeachingPeriods : numTeachingPeriods - 1; 
+  const electiveSlotsPerStudent = Math.max(0, effectiveSlots - coreCount);
+
+  coreCourses.forEach(c => {
+    const num = c.sections || Math.ceil(studentCount / (c.maxSize || maxClassSize));
+    const enroll = Math.ceil(studentCount / num);
+    for(let s=0; s<num; s++) {
+      sections.push({
+        id: `${c.id}-S${s+1}`, courseId: c.id, courseName: c.name, 
+        sectionNum: s+1, maxSize: c.maxSize || maxClassSize, 
+        enrollment: Math.min(enroll, c.maxSize || maxClassSize),
+        department: c.department, roomType: c.roomType || "regular",
+        isCore: true, teacher: null, room: null, period: null, lunchWave: null
+      });
+    }
+  });
+
+  const totalElectiveSections = electiveCourses.reduce((sum, c) => sum + (c.sections || 0), 0);
+  const totalElectiveDemand = studentCount * electiveSlotsPerStudent;
+  
+  electiveCourses.forEach(c => {
+    let num = c.sections;
+    const isPE = c.department.toLowerCase().includes("pe");
+    const size = isPE ? 50 : (c.maxSize || maxClassSize);
+    if (!num) {
+      const share = totalElectiveSections > 0 ? (1/electiveCourses.length) : (1/electiveCourses.length);
+      num = Math.max(1, Math.ceil((totalElectiveDemand * share) / size));
+    }
+    const enroll = Math.ceil(totalElectiveDemand / (totalElectiveSections || (num * electiveCourses.length))); 
+    for(let s=0; s<num; s++) {
+      sections.push({
+        id: `${c.id}-S${s+1}`, courseId: c.id, courseName: c.name,
+        sectionNum: s+1, maxSize: size, enrollment: Math.min(enroll, size),
+        department: c.department, roomType: c.roomType || "regular",
+        isCore: false, teacher: null, room: null, period: null, lunchWave: null
+      });
+    }
+  });
+
+  const teacherLoad = {};
+  teachers.forEach(t => teacherLoad[t.id] = 0);
+  
+  // Assign Teachers
+  [...sections].sort(() => Math.random() - 0.5).forEach(sec => {
+    const candidates = teachers.filter(t => (t.departments||[]).includes(sec.department));
+    const pool = candidates.length > 0 ? candidates : teachers; 
+    pool.sort((a,b) => (teacherLoad[a.id]||0) - (teacherLoad[b.id]||0));
+    if(pool.length > 0) {
+      const t = pool[0]; sec.teacher = t.id; sec.teacherName = t.name; teacherLoad[t.id]++;
+      if(teacherHomeRoom[t.id]) { sec.room = teacherHomeRoom[t.id]; sec.roomName = rooms.find(r=>r.id===sec.room)?.name; }
+    } else { sec.hasConflict = true; sec.conflictReason = "No Teacher"; }
+  });
+
+  // Pre-place locked constraints
+  constraints.forEach(c => {
+    if(c.type === "lock_period" && c.sectionId) {
+      const s = sections.find(x=>x.id === c.sectionId);
+      if(s) { s.period = parseInt(c.period); s.locked = true; }
+    }
+  });
+
+  sections.filter(s=>s.locked && s.period).forEach(s => {
+    if(s.teacher) { if(!teacherSchedule[s.teacher]) teacherSchedule[s.teacher] = {}; teacherSchedule[s.teacher][s.period] = s.id; }
+    if(s.room) { if(!roomSchedule[s.room]) roomSchedule[s.room] = {}; roomSchedule[s.room][s.period] = s.id; }
+  });
+
+  // 4. Greedy Placement Loop (Upgraded with Cost Tracking)
+  const secsInPeriod = {};
+  teachingPeriodIds.forEach(id => secsInPeriod[id] = 0);
+  const maxLoad = Math.max(1, effectiveSlots - planPeriodsPerDay);
+
+  const placementOrder = [...sections].filter(s => !s.locked && !s.hasConflict).sort((a,b) => {
+    if (a.isCore !== b.isCore) return a.isCore ? -1 : 1;
+    return 0;
+  });
+
+  placementOrder.forEach(sec => {
+    let bestP = null;
+    let minCost = Infinity;
+    const shuffled = [...teachingPeriodIds].sort(()=>Math.random()-0.5);
+    
+    let periodEvaluations = []; // Tracks why certain periods were skipped/chosen
+
+    for(const pid of shuffled) {
+      let cost = 0;
+      let fails = [];
+
+      // Hard Constraints
+      if(teacherSchedule[sec.teacher]?.[pid]) fails.push("Teacher already booked");
+      if(teacherBlocked[sec.teacher]?.has(pid)) fails.push("Teacher unavailable/blocked");
+
+      if (fails.length > 0) {
+        periodEvaluations.push({ period: pid, cost: Infinity, reasons: fails });
+        continue; // Skip this period entirely
+      }
+
+      // Soft Constraints (Cost Additions)
+      const tLoad = Object.keys(teacherSchedule[sec.teacher]||{}).filter(k=>teacherSchedule[sec.teacher][k] !== "LUNCH").length;
+      if(tLoad >= maxLoad) { cost += 500; fails.push("Exceeds target teacher load"); }
+      if(sec.room && roomSchedule[sec.room]?.[pid]) { cost += 100; fails.push("Preferred room occupied"); }
+      
+      cost += (secsInPeriod[pid]||0) * 10; // Load balancing penalty
+      
+      const sibs = sections.filter(s => s.courseId === sec.courseId && s.period === pid).length;
+      if(!sec.isCore && sibs > 0) { cost += 200; fails.push("Elective overlap"); }
+
+      periodEvaluations.push({ period: pid, cost, reasons: fails });
+
+      if(cost < minCost) { 
+        minCost = cost; 
+        bestP = pid; 
+      }
+    }
+
+    if(bestP) {
+      sec.period = bestP;
+      secsInPeriod[bestP]++;
+      if(sec.teacher) { if(!teacherSchedule[sec.teacher]) teacherSchedule[sec.teacher]={}; teacherSchedule[sec.teacher][bestP] = sec.id; }
+      
+      let finalRoom = sec.room;
+      if(!finalRoom || roomSchedule[finalRoom]?.[bestP]) { 
+        const open = rooms.find(r => r.type === sec.roomType && !roomSchedule[r.id]?.[bestP]); 
+        if(open) finalRoom = open.id; 
+      }
+      if(finalRoom) { 
+        sec.room = finalRoom; sec.roomName = rooms.find(r=>r.id===finalRoom)?.name; 
+        if(!roomSchedule[finalRoom]) roomSchedule[finalRoom]={}; 
+        roomSchedule[finalRoom][bestP] = sec.id; 
+      }
+      
+      logger.logPlacement(sec, bestP, minCost, periodEvaluations);
+
+    } else {
+      sec.hasConflict = true; 
+      sec.conflictReason = "Scheduling Gridlock (Check Logger)"; 
+      conflicts.push({ type: "unscheduled", message: `${sec.courseName} S${sec.sectionNum}: No valid period found`, sectionId: sec.id });
+      logger.logFailure(sec, periodEvaluations);
+    }
+  });
+
+  // 5. Lunch Waves Processing
+  if (isSplitLunch && lunchPid) {
+    const lunchSections = sections.filter(s => s.period === lunchPid && !s.hasConflict);
+    const depts = [...new Set(lunchSections.map(s => s.department))];
+    const deptWaveMap = {};
+    const waveCounts = Array(numWaves).fill(0);
+    
+    depts.sort((a,b) => {
+      const countA = lunchSections.filter(s => s.department === a).length;
+      const countB = lunchSections.filter(s => s.department === b).length;
+      return countB - countA;
+    });
+
+    depts.forEach(dept => {
+      const deptSecs = lunchSections.filter(s => s.department === dept);
+      const studentCountInDept = deptSecs.reduce((sum, s) => sum + s.enrollment, 0);
+      let bestWave = 0;
+      let minVal = Infinity;
+      for(let w=0; w<numWaves; w++) {
+        if(waveCounts[w] < minVal) { minVal = waveCounts[w]; bestWave = w; }
+      }
+      deptWaveMap[dept] = bestWave + 1;
+      waveCounts[bestWave] += studentCountInDept;
+    });
+
+    lunchSections.forEach(s => { s.lunchWave = deptWaveMap[s.department]; });
+  }
+
+  // 6. Analytics Generation
+  const periodStudentData = {};
+  teachingPeriodIds.forEach(pid => {
+    const pSecs = sections.filter(s => s.period === pid && !s.hasConflict);
+    const seats = pSecs.reduce((sum, s) => sum + (s.enrollment||0), 0);
+    let unaccounted = Math.max(0, studentCount - seats);
+    if (!isSplitLunch && pid === lunchPid) { unaccounted = 0; }
+
+    periodStudentData[pid] = {
+      seatsInClass: seats,
+      unaccounted: unaccounted,
+      atLunch: (pid === lunchPid) ? (isSplitLunch ? "Waves" : studentCount) : 0,
+      sectionCount: pSecs.length
+    };
+
+    if(unaccounted > 50 && !(pid === lunchPid && !isSplitLunch)) {
+      conflicts.push({ type: "coverage", message: `Period ${pid}: ${unaccounted} students unaccounted for.` });
+    }
+  });
+
+  teachers.forEach(t => {
+    const teaching = Object.keys(teacherSchedule[t.id] || {}).filter(k => teacherSchedule[t.id][k] !== "LUNCH").length;
+    const free = effectiveSlots - teaching;
+    if (free < planPeriodsPerDay) { conflicts.push({ type: "plan_violation", message: `${t.name} has ${free} free periods (needs ${planPeriodsPerDay})`, teacherId: t.id }); }
+  });
+
+  return {
+    sections, periodList, 
+    logs: logger.logs, 
+    placementHistory: logger.placementHistory, // Exported to be read by UI if needed
+    conflicts,
+    teacherSchedule, roomSchedule, teachers, rooms,
+    periodStudentData,
+    stats: { 
+      totalSections: sections.length, 
+      scheduledCount: sections.filter(s => s.period && !s.hasConflict).length, 
+      conflictCount: conflicts.length, 
+      teacherCount: teachers.length, 
+      roomCount: rooms.length, 
+      totalStudents: studentCount 
+    }
+  };
+}
