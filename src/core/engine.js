@@ -55,7 +55,7 @@ class StructuredLogger {
 export function generateSchedule(config) {
   const {
     teachers = [], courses = [], rooms = [], constraints = [],
-    lunchConfig = {}, winConfig = {}, planPeriodsPerDay = 1,
+    lunchConfig = {}, winConfig = {}, planPeriodsPerDay = 1, plcEnabled = false,
     studentCount = 800, maxClassSize = 30,
     schoolStart = "08:00", schoolEnd = "15:00",
     passingTime = 5, scheduleMode = "period_length",
@@ -108,30 +108,20 @@ export function generateSchedule(config) {
       const winStartMin = prevPeriod.endMin + passingTime;
       const winEndMin = winStartMin + winDur;
 
-      // Create the custom WIN Period
       const customWinPeriod = {
-        id: "WIN", 
-        label: "WIN", 
-        type: "win",
-        startMin: winStartMin, 
-        endMin: winEndMin,
-        startTime: toTime(winStartMin), 
-        endTime: toTime(winEndMin),
+        id: "WIN", label: "WIN", type: "win",
+        startMin: winStartMin, endMin: winEndMin,
+        startTime: toTime(winStartMin), endTime: toTime(winEndMin),
         duration: winDur
       };
 
-      // Shift the start/end times of every period AFTER the WIN block
       let currentMin = winEndMin + passingTime;
       for (let i = insertIndex + 1; i < periodList.length; i++) {
         const p = periodList[i];
-        p.startMin = currentMin;
-        p.endMin = currentMin + p.duration;
-        p.startTime = toTime(currentMin);
-        p.endTime = toTime(currentMin + p.duration);
+        p.startMin = currentMin; p.endMin = currentMin + p.duration;
+        p.startTime = toTime(currentMin); p.endTime = toTime(currentMin + p.duration);
         currentMin += p.duration + passingTime;
       }
-
-      // Inject it into the array
       periodList.splice(insertIndex + 1, 0, customWinPeriod);
     }
   }
@@ -141,21 +131,17 @@ export function generateSchedule(config) {
   const lunchDuration = lunchConfig.lunchDuration || 30;
   const numWaves = lunchConfig.numWaves || 3;
   const minClassTime = lunchConfig.minClassTime || 30;
-  
-  // Notice this fix so it correctly grabs the string "WIN" if we injected a separate block
   const winPid = winConfig.enabled ? (winConfig.model === "separate" ? "WIN" : winConfig.winPeriod) : null;
 
   periodList = periodList.map(p => {
-    let type = p.type || "class"; // retain existing type if set (like 'win')
+    let type = p.type || "class";
     if (p.id === lunchPid) {
       type = isSplitLunch ? "split_lunch" : "unit_lunch";
       if (isSplitLunch) {
         const cafeteriaReq = lunchDuration * numWaves;
         const pedagogicalReq = minClassTime + lunchDuration;
         const required = Math.max(cafeteriaReq, pedagogicalReq);
-        if (p.duration < (required - 2)) {
-          conflicts.push({ type: "coverage", message: `CRITICAL: Period ${p.id} is ${p.duration}m. Needs ${required}m to satisfy cafeteria & learning constraints.` });
-        }
+        if (p.duration < (required - 2)) conflicts.push({ type: "coverage", message: `CRITICAL: Period ${p.id} is ${p.duration}m. Needs ${required}m to satisfy cafeteria & learning constraints.` });
       }
     } else if (p.id === winPid) {
       type = "win";
@@ -167,7 +153,7 @@ export function generateSchedule(config) {
   const teachingPeriodIds = teachingPeriods.map(p => p.id);
   const numTeachingPeriods = teachingPeriodIds.length;
 
-  // 2. Setup Resources (Rooms, Teachers, Blocked times)
+  // 2. Setup Resources
   const teacherHomeRoom = {};
   const regularRooms = rooms.filter(r => r.type === "regular");
   const labRooms = rooms.filter(r => r.type === "lab");
@@ -198,6 +184,27 @@ export function generateSchedule(config) {
     teachers.forEach(t => { teacherSchedule[t.id][lunchPid] = "LUNCH"; teacherBlocked[t.id].add(lunchPid); });
   }
 
+  // --- NEW: COMMON PLC LOGIC ---
+  if (plcEnabled) {
+    logger.info("Setting up Departmental PLC blocks...");
+    const depts = [...new Set(teachers.map(t => (t.departments && t.departments[0]) || "General"))];
+    
+    // We can only schedule PLC during actual teaching periods (not Lunch, not WIN)
+    const validPlcPeriods = periodList.filter(p => p.type === "class" || p.type === "split_lunch").map(p => p.id);
+
+    depts.forEach((dept, index) => {
+      // Rotate PLC periods so all departments aren't off at the exact same time
+      const plcPid = validPlcPeriods[index % validPlcPeriods.length];
+      const deptTeachers = teachers.filter(t => (t.departments && t.departments[0]) === dept);
+      
+      deptTeachers.forEach(t => {
+        teacherSchedule[t.id][plcPid] = "PLC";
+        teacherBlocked[t.id].add(plcPid);
+      });
+      logger.info(`Assigned Period ${plcPid} as Common PLC for ${dept} Department (${deptTeachers.length} teachers).`);
+    });
+  }
+
   constraints.forEach(c => {
     if (c.type === "teacher_unavailable") teacherBlocked[c.teacherId]?.add(parseInt(c.period));
   });
@@ -207,7 +214,6 @@ export function generateSchedule(config) {
   const coreCourses = courses.filter(c => c.required);
   const electiveCourses = courses.filter(c => !c.required);
   const coreCount = coreCourses.length;
-  
   const effectiveSlots = isSplitLunch ? numTeachingPeriods : numTeachingPeriods - 1; 
   const electiveSlotsPerStudent = Math.max(0, effectiveSlots - coreCount);
 
@@ -261,7 +267,6 @@ export function generateSchedule(config) {
     } else { sec.hasConflict = true; sec.conflictReason = "No Teacher"; }
   });
 
-  // Pre-place locked constraints
   constraints.forEach(c => {
     if(c.type === "lock_period" && c.sectionId) {
       const s = sections.find(x=>x.id === c.sectionId);
@@ -277,7 +282,9 @@ export function generateSchedule(config) {
   // 4. Greedy Placement Loop
   const secsInPeriod = {};
   teachingPeriodIds.forEach(id => secsInPeriod[id] = 0);
-  const maxLoad = Math.max(1, effectiveSlots - planPeriodsPerDay);
+  
+  // Adjusted target load to account for PLC
+  const maxLoad = Math.max(1, effectiveSlots - planPeriodsPerDay - (plcEnabled ? 1 : 0));
 
   const placementOrder = [...sections].filter(s => !s.locked && !s.hasConflict).sort((a,b) => {
     if (a.isCore !== b.isCore) return a.isCore ? -1 : 1;
@@ -292,13 +299,11 @@ export function generateSchedule(config) {
     let periodEvaluations = []; 
 
     for(const pid of shuffled) {
-      // Don't schedule regular classes during the custom WIN string ID block
       if(pid === "WIN") continue;
 
       let cost = 0;
       let fails = [];
 
-      // Hard Constraints
       if(teacherSchedule[sec.teacher]?.[pid]) fails.push("Teacher already booked");
       if(teacherBlocked[sec.teacher]?.has(pid)) fails.push("Teacher unavailable/blocked");
 
@@ -307,8 +312,8 @@ export function generateSchedule(config) {
         continue;
       }
 
-      // Soft Constraints (Cost Additions)
-      const tLoad = Object.keys(teacherSchedule[sec.teacher]||{}).filter(k=>teacherSchedule[sec.teacher][k] !== "LUNCH").length;
+      // Calculate teacher load excluding Lunch, Plan, and PLC
+      const tLoad = Object.keys(teacherSchedule[sec.teacher]||{}).filter(k => !["LUNCH", "PLC", "PLAN"].includes(teacherSchedule[sec.teacher][k])).length;
       if(tLoad >= maxLoad) { cost += 500; fails.push("Exceeds target teacher load"); }
       if(sec.room && roomSchedule[sec.room]?.[pid]) { cost += 100; fails.push("Preferred room occupied"); }
       
@@ -319,10 +324,7 @@ export function generateSchedule(config) {
 
       periodEvaluations.push({ period: pid, cost, reasons: fails });
 
-      if(cost < minCost) { 
-        minCost = cost; 
-        bestP = pid; 
-      }
+      if(cost < minCost) { minCost = cost; bestP = pid; }
     }
 
     if(bestP) {
@@ -340,12 +342,9 @@ export function generateSchedule(config) {
         if(!roomSchedule[finalRoom]) roomSchedule[finalRoom]={}; 
         roomSchedule[finalRoom][bestP] = sec.id; 
       }
-      
       logger.logPlacement(sec, bestP, minCost, periodEvaluations);
-
     } else {
-      sec.hasConflict = true; 
-      sec.conflictReason = "Scheduling Gridlock (Check Logger)"; 
+      sec.hasConflict = true; sec.conflictReason = "Scheduling Gridlock (Check Logger)"; 
       conflicts.push({ type: "unscheduled", message: `${sec.courseName} S${sec.sectionNum}: No valid period found`, sectionId: sec.id });
       logger.logFailure(sec, periodEvaluations);
     }
@@ -367,15 +366,10 @@ export function generateSchedule(config) {
     depts.forEach(dept => {
       const deptSecs = lunchSections.filter(s => s.department === dept);
       const studentCountInDept = deptSecs.reduce((sum, s) => sum + s.enrollment, 0);
-      let bestWave = 0;
-      let minVal = Infinity;
-      for(let w=0; w<numWaves; w++) {
-        if(waveCounts[w] < minVal) { minVal = waveCounts[w]; bestWave = w; }
-      }
-      deptWaveMap[dept] = bestWave + 1;
-      waveCounts[bestWave] += studentCountInDept;
+      let bestWave = 0; let minVal = Infinity;
+      for(let w=0; w<numWaves; w++) { if(waveCounts[w] < minVal) { minVal = waveCounts[w]; bestWave = w; } }
+      deptWaveMap[dept] = bestWave + 1; waveCounts[bestWave] += studentCountInDept;
     });
-
     lunchSections.forEach(s => { s.lunchWave = deptWaveMap[s.department]; });
   }
 
@@ -386,41 +380,33 @@ export function generateSchedule(config) {
     const seats = pSecs.reduce((sum, s) => sum + (s.enrollment||0), 0);
     let unaccounted = Math.max(0, studentCount - seats);
     
-    if (!isSplitLunch && pid === lunchPid) { unaccounted = 0; }
-    if (pid === "WIN") { unaccounted = 0; } // Don't trigger coverage alarms on injected WIN time
+    if (!isSplitLunch && pid === lunchPid) unaccounted = 0;
+    if (pid === "WIN") unaccounted = 0;
 
     periodStudentData[pid] = {
-      seatsInClass: seats,
-      unaccounted: unaccounted,
+      seatsInClass: seats, unaccounted: unaccounted,
       atLunch: (pid === lunchPid) ? (isSplitLunch ? "Waves" : studentCount) : 0,
       sectionCount: pSecs.length
     };
-
     if(unaccounted > 50 && !(pid === lunchPid && !isSplitLunch) && pid !== "WIN") {
       conflicts.push({ type: "coverage", message: `Period ${pid}: ${unaccounted} students unaccounted for.` });
     }
   });
 
   teachers.forEach(t => {
-    const teaching = Object.keys(teacherSchedule[t.id] || {}).filter(k => teacherSchedule[t.id][k] !== "LUNCH").length;
+    const teaching = Object.keys(teacherSchedule[t.id] || {}).filter(k => !["LUNCH", "PLC", "PLAN"].includes(teacherSchedule[t.id][k])).length;
     const free = effectiveSlots - teaching;
-    if (free < planPeriodsPerDay) { conflicts.push({ type: "plan_violation", message: `${t.name} has ${free} free periods (needs ${planPeriodsPerDay})`, teacherId: t.id }); }
+    // Notify if they don't have enough free periods. 
+    // We expect them to have planPeriodsPerDay + 1 for PLC (if enabled).
+    const expectedFree = planPeriodsPerDay + (plcEnabled ? 1 : 0);
+    if (free < expectedFree) { 
+      conflicts.push({ type: "plan_violation", message: `${t.name} has ${free} free periods (needs ${expectedFree} for Plan/PLC)`, teacherId: t.id }); 
+    }
   });
 
   return {
-    sections, periodList, 
-    logs: logger.logs, 
-    placementHistory: logger.placementHistory, 
-    conflicts,
-    teacherSchedule, roomSchedule, teachers, rooms,
-    periodStudentData,
-    stats: { 
-      totalSections: sections.length, 
-      scheduledCount: sections.filter(s => s.period && !s.hasConflict).length, 
-      conflictCount: conflicts.length, 
-      teacherCount: teachers.length, 
-      roomCount: rooms.length, 
-      totalStudents: studentCount 
-    }
+    sections, periodList, logs: logger.logs, placementHistory: logger.placementHistory, 
+    conflicts, teacherSchedule, roomSchedule, teachers, rooms, periodStudentData,
+    stats: { totalSections: sections.length, scheduledCount: sections.filter(s => s.period && !s.hasConflict).length, conflictCount: conflicts.length, teacherCount: teachers.length, roomCount: rooms.length, totalStudents: studentCount }
   };
 }
