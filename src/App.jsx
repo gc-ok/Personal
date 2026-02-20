@@ -3,7 +3,7 @@ import React, { useState } from "react";
 import { COLORS } from "./utils/theme";
 import { generateSchedule } from "./core/engine";
 import ScheduleGridView from "./components/grid/ScheduleGridView";
-import { Logo, Btn } from "./components/ui/CoreUI";
+import { Logo, Btn, Card } from "./components/ui/CoreUI";
 
 import { 
   SchoolTypeStep, ScheduleTypeStep, BellScheduleStep, LunchStep, 
@@ -13,18 +13,23 @@ import {
 
 function buildScheduleConfig(config) {
   const pc = config.periodsCount || 7;
+  
+  const periodsConfig = (Array.isArray(config.periods) && config.periods.length > 0)
+    ? config.periods 
+    : []; 
+
   return {
     ...config,
-    periods: config.periods || [],
+    periods: periodsConfig,
     schoolStart: config.schoolStart || "08:00",
     periodLength: config.periodLength || 50,
     passingTime: config.passingTime || 5,
     lunchConfig: {
-      style: config.lunchConfig?.style || "unit",
-      lunchPeriod: config.lunchConfig?.lunchPeriod ?? Math.ceil(pc / 2),
-      lunchDuration: config.lunchConfig?.lunchDuration || 30,
-      numWaves: config.lunchConfig?.numWaves || 1,
-      minClassTime: config.lunchConfig?.minClassTime || 45
+      style: config.lunchConfig?.style || config.lunchStyle || "unit",
+      lunchPeriod: config.lunchConfig?.lunchPeriod ?? config.lunchPeriod ?? Math.ceil(pc / 2),
+      lunchDuration: config.lunchConfig?.lunchDuration || config.lunchDuration || 30,
+      numWaves: config.lunchConfig?.numWaves || config.numLunchWaves || 1,
+      minClassTime: config.lunchConfig?.minClassTime || config.minClassTime || 45
     },
     winConfig: {
       enabled: config.winEnabled || false,
@@ -83,7 +88,6 @@ export default function App() {
             {schedule.stats?.scheduledCount}/{schedule.stats?.totalSections} scheduled · {schedule.stats?.conflictCount} conflicts
           </div>
         </div>
-        
         <ScheduleGridView
           schedule={schedule}
           config={config}
@@ -97,10 +101,9 @@ export default function App() {
 
   return (
     <div style={rootStyle}>
-      <div style={{ background: COLORS.white, padding: "14px 24px", borderBottom: `1px solid ${COLORS.lightGray}` }}>
+      <div style={{ background: COLORS.white, padding: "14px 24px", borderBottom: `1px solid ${COLORS.lightGray}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <Logo size={36} />
       </div>
-      
       {step > 0 && (
         <div style={{ background: COLORS.white, padding: "10px 24px", borderBottom: `1px solid ${COLORS.lightGray}`, overflowX: "auto" }}>
           <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
@@ -119,7 +122,6 @@ export default function App() {
           </div>
         </div>
       )}
-      
       <div style={{ maxWidth: 900, margin: "0 auto", padding: "30px 24px" }}>
         {step === 0 && (
           <div style={{ textAlign: "center", paddingTop: 40 }}>
@@ -127,6 +129,14 @@ export default function App() {
             <h1 style={{ fontSize: 28, color: COLORS.primary, marginBottom: 8 }}>K-12 Master Scheduler</h1>
             <p style={{ fontSize: 15, color: COLORS.textLight, maxWidth: 480, margin: "0 auto 30px", lineHeight: 1.6 }}>Build your master schedule in minutes. Configure, generate, and fine-tune.</p>
             <Btn onClick={() => setStep(1)} style={{ padding: "14px 32px", fontSize: 16 }}>🚀 Start New Project</Btn>
+            <div style={{ marginTop: 40, display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(200px,1fr))", gap: 16, textAlign: "left" }}>
+              {[
+                { i: "🏫", t: "All School Types", d: "K-5 through 12" },
+                { i: "⚡", t: "Smart Algorithm", d: "Home rooms, student accounting, capacity validation" },
+                { i: "🔒", t: "FERPA Safe", d: "100% in-browser. Zero server storage." },
+                { i: "📊", t: "Detailed Analytics", d: "Period-by-period student coverage tracking" },
+              ].map(f => <Card key={f.t}><div style={{ fontSize: 28, marginBottom: 8 }}>{f.i}</div><div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{f.t}</div><div style={{ fontSize: 13, color: COLORS.textLight, lineHeight: 1.4 }}>{f.d}</div></Card>)}
+            </div>
           </div>
         )}
         {step === 1 && <SchoolTypeStep config={config} setConfig={setConfig} onNext={() => setStep(2)} />}
