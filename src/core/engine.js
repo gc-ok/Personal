@@ -1,6 +1,6 @@
 // src/core/engine.js
 
-// --- Time Utilities (Can be moved to src/utils/time.js later) ---
+// --- Time Utilities ---
 const toMins = t => { if (!t) return 480; const [h, m] = t.split(":").map(Number); return h * 60 + m; };
 const toTime = mins => {
   const h = Math.floor(mins / 60) % 24;
@@ -29,14 +29,13 @@ class StructuredLogger {
     this.logs.push({ timestamp: Date.now(), level: "ERROR", msg, data });
   }
 
-  // New: Logs the detailed cost evaluation of the greedy loop
   logPlacement(section, period, finalCost, evaluations) {
     this.placementHistory.push({
       sectionId: section.id,
       course: section.courseName,
       assignedPeriod: period,
       costScore: finalCost,
-      evaluations: evaluations, // Array of why other periods failed or cost more
+      evaluations: evaluations,
       status: "SUCCESS"
     });
   }
@@ -45,7 +44,7 @@ class StructuredLogger {
     this.placementHistory.push({
       sectionId: section.id,
       course: section.courseName,
-      evaluations: evaluations, // Shows exactly which constraints blocked every period
+      evaluations: evaluations,
       status: "FAILED"
     });
     this.error(`Gridlock: Failed to place ${section.courseName} S${section.sectionNum}`);
@@ -98,15 +97,56 @@ export function generateSchedule(config) {
     }
   }
 
+  // --- INJECT "SEPARATE BLOCK" WIN TIME ---
+  if (winConfig.enabled && winConfig.model === "separate") {
+    const insertAfterId = parseInt(winConfig.afterPeriod);
+    const insertIndex = periodList.findIndex(p => p.id === insertAfterId);
+
+    if (insertIndex !== -1) {
+      const winDur = parseInt(winConfig.winDuration) || 30;
+      const prevPeriod = periodList[insertIndex];
+      const winStartMin = prevPeriod.endMin + passingTime;
+      const winEndMin = winStartMin + winDur;
+
+      // Create the custom WIN Period
+      const customWinPeriod = {
+        id: "WIN", 
+        label: "WIN", 
+        type: "win",
+        startMin: winStartMin, 
+        endMin: winEndMin,
+        startTime: toTime(winStartMin), 
+        endTime: toTime(winEndMin),
+        duration: winDur
+      };
+
+      // Shift the start/end times of every period AFTER the WIN block
+      let currentMin = winEndMin + passingTime;
+      for (let i = insertIndex + 1; i < periodList.length; i++) {
+        const p = periodList[i];
+        p.startMin = currentMin;
+        p.endMin = currentMin + p.duration;
+        p.startTime = toTime(currentMin);
+        p.endTime = toTime(currentMin + p.duration);
+        currentMin += p.duration + passingTime;
+      }
+
+      // Inject it into the array
+      periodList.splice(insertIndex + 1, 0, customWinPeriod);
+    }
+  }
+
   const lunchPid = lunchConfig.lunchPeriod; 
   const isSplitLunch = lunchConfig.style === "split";
   const lunchDuration = lunchConfig.lunchDuration || 30;
   const numWaves = lunchConfig.numWaves || 3;
   const minClassTime = lunchConfig.minClassTime || 30;
-  const winPid = winConfig.enabled ? winConfig.winPeriod : null;
+  
+  // Notice this fix so it correctly grabs the string "WIN" if we injected a separate block
+  const winPid = winConfig.enabled ? (winConfig.model === "separate" ? "WIN" : winConfig.winPeriod) : null;
 
   periodList = periodList.map(p => {
-    let type = "class";
+    let type = p.type || "class"; // retain existing type if set (like 'win')
     if (p.id === lunchPid) {
       type = isSplitLunch ? "split_lunch" : "unit_lunch";
       if (isSplitLunch) {
@@ -234,7 +274,7 @@ export function generateSchedule(config) {
     if(s.room) { if(!roomSchedule[s.room]) roomSchedule[s.room] = {}; roomSchedule[s.room][s.period] = s.id; }
   });
 
-  // 4. Greedy Placement Loop (Upgraded with Cost Tracking)
+  // 4. Greedy Placement Loop
   const secsInPeriod = {};
   teachingPeriodIds.forEach(id => secsInPeriod[id] = 0);
   const maxLoad = Math.max(1, effectiveSlots - planPeriodsPerDay);
@@ -249,9 +289,12 @@ export function generateSchedule(config) {
     let minCost = Infinity;
     const shuffled = [...teachingPeriodIds].sort(()=>Math.random()-0.5);
     
-    let periodEvaluations = []; // Tracks why certain periods were skipped/chosen
+    let periodEvaluations = []; 
 
     for(const pid of shuffled) {
+      // Don't schedule regular classes during the custom WIN string ID block
+      if(pid === "WIN") continue;
+
       let cost = 0;
       let fails = [];
 
@@ -261,7 +304,7 @@ export function generateSchedule(config) {
 
       if (fails.length > 0) {
         periodEvaluations.push({ period: pid, cost: Infinity, reasons: fails });
-        continue; // Skip this period entirely
+        continue;
       }
 
       // Soft Constraints (Cost Additions)
@@ -269,7 +312,7 @@ export function generateSchedule(config) {
       if(tLoad >= maxLoad) { cost += 500; fails.push("Exceeds target teacher load"); }
       if(sec.room && roomSchedule[sec.room]?.[pid]) { cost += 100; fails.push("Preferred room occupied"); }
       
-      cost += (secsInPeriod[pid]||0) * 10; // Load balancing penalty
+      cost += (secsInPeriod[pid]||0) * 10;
       
       const sibs = sections.filter(s => s.courseId === sec.courseId && s.period === pid).length;
       if(!sec.isCore && sibs > 0) { cost += 200; fails.push("Elective overlap"); }
@@ -342,7 +385,9 @@ export function generateSchedule(config) {
     const pSecs = sections.filter(s => s.period === pid && !s.hasConflict);
     const seats = pSecs.reduce((sum, s) => sum + (s.enrollment||0), 0);
     let unaccounted = Math.max(0, studentCount - seats);
+    
     if (!isSplitLunch && pid === lunchPid) { unaccounted = 0; }
+    if (pid === "WIN") { unaccounted = 0; } // Don't trigger coverage alarms on injected WIN time
 
     periodStudentData[pid] = {
       seatsInClass: seats,
@@ -351,7 +396,7 @@ export function generateSchedule(config) {
       sectionCount: pSecs.length
     };
 
-    if(unaccounted > 50 && !(pid === lunchPid && !isSplitLunch)) {
+    if(unaccounted > 50 && !(pid === lunchPid && !isSplitLunch) && pid !== "WIN") {
       conflicts.push({ type: "coverage", message: `Period ${pid}: ${unaccounted} students unaccounted for.` });
     }
   });
@@ -365,7 +410,7 @@ export function generateSchedule(config) {
   return {
     sections, periodList, 
     logs: logger.logs, 
-    placementHistory: logger.placementHistory, // Exported to be read by UI if needed
+    placementHistory: logger.placementHistory, 
     conflicts,
     teacherSchedule, roomSchedule, teachers, rooms,
     periodStudentData,
