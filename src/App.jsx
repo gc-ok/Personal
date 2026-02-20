@@ -29,6 +29,9 @@ function buildScheduleConfig(config) {
     winConfig: {
       enabled: config.winEnabled || false,
       winPeriod: config.winPeriod,
+      model: config.winModel || "uses_period",
+      afterPeriod: config.winAfterPeriod || 1,
+      winDuration: config.winDuration || 30,
     },
     teachers: config.teachers || [],
     courses: config.courses || [],
