@@ -220,6 +220,7 @@ export function LunchStep({ config: c, setConfig, onNext, onBack }) {
   
   const [style, setStyle] = useState(c.lunchConfig?.style || "unit");
   const [lunchPeriod, setLunchPeriod] = useState(c.lunchConfig?.lunchPeriod || 3);
+  const [lunchPeriods, setLunchPeriods] = useState(c.lunchConfig?.lunchPeriods || []); // NEW STATE
   const [duration, setDuration] = useState(c.lunchConfig?.lunchDuration || 30);
   const [waves, setWaves] = useState(c.lunchConfig?.numWaves || 3);
   const [minClassTime, setMinClassTime] = useState(c.lunchConfig?.minClassTime || 45);
@@ -231,7 +232,10 @@ export function LunchStep({ config: c, setConfig, onNext, onBack }) {
   const requiredDuration = style === "split" ? Math.max(cafeteriaTime, studentTime) : duration;
   
   const currentDuration = selectedPeriod?.duration || 0;
-  const isTooShort = selectedPeriod && currentDuration < requiredDuration;
+  
+  // We only show the "Too Short" warning for Split or Unit lunches. 
+  // Multi-period lunches simply take over normal full-length class periods.
+  const isTooShort = style !== "multi_period" && selectedPeriod && currentDuration < requiredDuration;
 
   const autoAdjustTimeline = () => {
     const mode = c.scheduleMode || "period_length";
@@ -285,11 +289,13 @@ export function LunchStep({ config: c, setConfig, onNext, onBack }) {
     setConfig({
       ...c,
       periods: newPeriods,
-      lunchConfig: { style, lunchPeriod, lunchDuration: duration, numWaves: style === "split" ? waves : 1, minClassTime }
+      lunchConfig: { style, lunchPeriod, lunchPeriods, lunchDuration: duration, numWaves: style === "split" ? waves : 1, minClassTime }
     });
     
     onNext();
   };
+
+  const isMultiPeriodValid = style !== "multi_period" || lunchPeriods.length >= 2;
 
   return (
     <div>
@@ -298,35 +304,83 @@ export function LunchStep({ config: c, setConfig, onNext, onBack }) {
         Configure how lunch fits into your bell schedule.
       </p>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
+      {/* NEW: 3-Column Grid to support the new option */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 24 }}>
         <Card selected={style === "unit"} onClick={() => setStyle("unit")}>
           <div style={{ fontSize: 24, marginBottom: 8 }}>🍎</div>
           <div style={{ fontWeight: 700, fontSize: 14 }}>Unit Lunch</div>
-          <div style={{ fontSize: 12, color: COLORS.textLight, marginTop: 4 }}>Whole school eats at same time.</div>
+          <div style={{ fontSize: 12, color: COLORS.textLight, marginTop: 4 }}>Whole school stops to eat at the exact same time.</div>
         </Card>
         <Card selected={style === "split"} onClick={() => setStyle("split")}>
           <div style={{ fontSize: 24, marginBottom: 8 }}>🌊</div>
-          <div style={{ fontWeight: 700, fontSize: 14 }}>Split Period (Waves)</div>
-          <div style={{ fontSize: 12, color: COLORS.textLight, marginTop: 4 }}>Long period containing rotating waves. Includes "Class-Lunch-Class" splits.</div>
+          <div style={{ fontWeight: 700, fontSize: 14 }}>Split (Waves)</div>
+          <div style={{ fontSize: 12, color: COLORS.textLight, marginTop: 4 }}>Long period with rotating waves (e.g., Class-Lunch-Class).</div>
+        </Card>
+        <Card selected={style === "multi_period"} onClick={() => setStyle("multi_period")}>
+          <div style={{ fontSize: 24, marginBottom: 8 }}>🥪</div>
+          <div style={{ fontWeight: 700, fontSize: 14 }}>Multi-Period</div>
+          <div style={{ fontSize: 12, color: COLORS.textLight, marginTop: 4 }}>Students eat during different full class periods.</div>
         </Card>
       </div>
 
       <div style={{ maxWidth: 550 }}>
-        <div style={{ marginBottom: 16 }}>
-          <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
-            {style === "unit" ? "Which period is Lunch?" : "Which period contains the waves?"}
-          </label>
-          <select value={lunchPeriod} onChange={e => setLunchPeriod(parseInt(e.target.value))} style={{ ...SELECT_STYLE }}>
-            {periods.map(p => (
-              <option key={p.id} value={p.id}>{p.label} ({p.startTime} - {p.endTime}, {p.duration}m)</option>
-            ))}
-          </select>
-        </div>
+        
+        {/* DYNAMIC SELECTION UI */}
+        {style === "multi_period" ? (
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+              Select the periods dedicated to Lunch blocks:
+            </label>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              {periods.map(p => {
+                const isSelected = lunchPeriods.includes(p.id);
+                return (
+                  <div 
+                    key={p.id}
+                    onClick={() => {
+                      if (isSelected) setLunchPeriods(lunchPeriods.filter(id => id !== p.id));
+                      else setLunchPeriods([...lunchPeriods, p.id].sort());
+                    }}
+                    style={{
+                      padding: "8px 14px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600,
+                      background: isSelected ? COLORS.primary : COLORS.white,
+                      color: isSelected ? COLORS.white : COLORS.text,
+                      border: `2px solid ${isSelected ? COLORS.primary : COLORS.lightGray}`
+                    }}
+                  >
+                    {p.label}
+                  </div>
+                );
+              })}
+            </div>
+            {!isMultiPeriodValid && (
+              <div style={{ color: COLORS.danger, fontSize: 12, marginTop: 8, fontWeight: 600 }}>
+                ⚠️ Please select at least two periods.
+              </div>
+            )}
+            <div style={{ fontSize: 12, color: COLORS.textLight, marginTop: 8 }}>
+              Teachers will automatically be distributed evenly across these periods so departments aren't fully empty.
+            </div>
+          </div>
+        ) : (
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+              {style === "unit" ? "Which period is Lunch?" : "Which period contains the waves?"}
+            </label>
+            <select value={lunchPeriod} onChange={e => setLunchPeriod(parseInt(e.target.value))} style={{ ...SELECT_STYLE }}>
+              {periods.map(p => (
+                <option key={p.id} value={p.id}>{p.label} ({p.startTime} - {p.endTime}, {p.duration}m)</option>
+              ))}
+            </select>
+          </div>
+        )}
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-            <NumInput label="Lunch Duration (min)" value={duration} onChange={setDuration} min={15} max={60} />
-            {style === "split" && <NumInput label="Number of Waves" value={waves} onChange={setWaves} min={2} max={4} />}
-        </div>
+        {style !== "multi_period" && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+              <NumInput label="Lunch Duration (min)" value={duration} onChange={setDuration} min={15} max={60} />
+              {style === "split" && <NumInput label="Number of Waves" value={waves} onChange={setWaves} min={2} max={4} />}
+          </div>
+        )}
 
         {style === "split" && (
             <div style={{ marginTop: 8, padding: 12, background: COLORS.white, border: `1px solid ${COLORS.lightGray}`, borderRadius: 8 }}>
@@ -338,36 +392,31 @@ export function LunchStep({ config: c, setConfig, onNext, onBack }) {
             </div>
         )}
             
-        <div style={{ marginTop: 20, padding: 16, borderRadius: 8, background: isTooShort ? "#FFF4E5" : "#F0F9FF", border: `1px solid ${isTooShort ? COLORS.warning : COLORS.secondary}`, fontSize: 13 }}>
-            {isTooShort ? (
-            <div>
-                <div style={{ fontWeight: 700, color: COLORS.warning, marginBottom: 8 }}>⚠️ Timeline Adjustment Needed</div>
-                <div style={{ marginBottom: 8, lineHeight: 1.5 }}>
-                    Period {lunchPeriod} is currently <strong>{currentDuration} min</strong>.<br/>
-                    To satisfy your constraints, it must be <strong>{requiredDuration} min</strong>.
-                </div>
-                <ul style={{ margin: "0 0 12px 16px", padding: 0, fontSize: 12, color: COLORS.text }}>
-                    <li>Cafeteria needs: {waves} waves × {duration}m = <strong>{cafeteriaTime}m</strong></li>
-                    <li>Students need: {minClassTime}m class + {duration}m lunch = <strong>{studentTime}m</strong></li>
-                </ul>
-                <Btn onClick={autoAdjustTimeline} variant="warning" style={{ width: "100%", justifyContent: "center" }}>
-                    ⚡ Auto-Adjust & Continue
-                </Btn>
-            </div>
-            ) : (
-            <div style={{ color: COLORS.primaryDark }}>
-                <strong>✅ Configuration Valid</strong><br/>
-                Period {lunchPeriod} is {currentDuration}m. (Req: {requiredDuration}m).
-            </div>
-            )}
-        </div>
+        {isTooShort && style !== "multi_period" && (
+          <div style={{ marginTop: 20, padding: 16, borderRadius: 8, background: "#FFF4E5", border: `1px solid ${COLORS.warning}`, fontSize: 13 }}>
+              <div style={{ fontWeight: 700, color: COLORS.warning, marginBottom: 8 }}>⚠️ Timeline Adjustment Needed</div>
+              <div style={{ marginBottom: 8, lineHeight: 1.5 }}>
+                  Period {lunchPeriod} is currently <strong>{currentDuration} min</strong>.<br/>
+                  To satisfy your constraints, it must be <strong>{requiredDuration} min</strong>.
+              </div>
+              <ul style={{ margin: "0 0 12px 16px", padding: 0, fontSize: 12, color: COLORS.text }}>
+                  <li>Cafeteria needs: {waves} waves × {duration}m = <strong>{cafeteriaTime}m</strong></li>
+                  <li>Students need: {minClassTime}m class + {duration}m lunch = <strong>{studentTime}m</strong></li>
+              </ul>
+              <Btn onClick={autoAdjustTimeline} variant="warning" style={{ width: "100%", justifyContent: "center" }}>
+                  ⚡ Auto-Adjust & Continue
+              </Btn>
+          </div>
+        )}
       </div>
 
       <div style={{ marginTop: 32, display: "flex", justifyContent: "space-between" }}>
         <Btn variant="secondary" onClick={onBack}>← Back</Btn>
         {!isTooShort && (
-            <Btn onClick={() => {
-                setConfig({ ...c, lunchConfig: { style, lunchPeriod, lunchDuration: duration, numWaves: style === "split" ? waves : 1, minClassTime } });
+            <Btn 
+              disabled={!isMultiPeriodValid}
+              onClick={() => {
+                setConfig({ ...c, lunchConfig: { style, lunchPeriod, lunchPeriods, lunchDuration: duration, numWaves: style === "split" ? waves : 1, minClassTime } });
                 onNext();
             }}>
                 Continue →
