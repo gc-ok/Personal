@@ -61,24 +61,26 @@ export default function App() {
     setStep(99);
   };
 
+  // --- MERGED REGENERATE: Preserves Manual Classes, Locks, AND Custom Sizes ---
   const regen = () => {
     if (!schedule) return;
     
-    // 1. Capture locked classes to force them into specific periods
-    const locked = schedule.sections.filter(s => s.locked);
-    const lockConstraints = locked.map(s => ({ type: "lock_period", sectionId: s.id, period: s.period, priority: "must" }));
-    
-    // 2. Capture custom enrollment overrides so the engine respects the new sizes
+    // 1. Capture locked classes and entirely new manual classes
+    const lockedSections = schedule.sections.filter(s => s.locked);
+    const manualSections = schedule.sections.filter(s => s.isManual && !s.locked);
+
+    // 2. Capture custom enrollment overrides for algorithm-generated classes
     const sizeOverrides = schedule.sections
-        .filter(s => s.enrollment !== s.maxSize) // Or any custom flag you set in the modal
-        .map(s => ({ type: "size_override", sectionId: s.id, enrollment: s.enrollment }));
+        .filter(s => s.enrollment !== s.maxSize && !s.isManual)
+        .map(s => ({ sectionId: s.id, enrollment: s.enrollment }));
 
     const result = generateSchedule({
       ...buildScheduleConfig(config),
-      constraints: [...(config.constraints || []), ...lockConstraints, ...sizeOverrides],
+      lockedSections,
+      manualSections
     });
     
-    // 3. Map the overrides back onto the generated sections before setting state
+    // 3. Map the custom sizes back onto the newly generated sections
     if (sizeOverrides.length > 0) {
         result.sections = result.sections.map(sec => {
             const override = sizeOverrides.find(o => o.sectionId === sec.id);
