@@ -30,7 +30,7 @@ export const PeriodHeader = ({ p, isLast }) => {
   );
 };
 
-export default function TeacherGrid({ schedule, config, fDept, setEditSection}) {
+export default function TeacherGrid({ schedule, config, fDept, setEditSection, onTeacherClick, onEditTeacher}) {
   const { periodList: allP = [], teachers = [], sections: secs = [], teacherSchedule = {} } = schedule;
   const numWaves = config?.lunchConfig?.numWaves || 3;
 
@@ -43,9 +43,20 @@ export default function TeacherGrid({ schedule, config, fDept, setEditSection}) 
         
         {teachers.filter(t => fDept === "all" || (t.departments || []).includes(fDept)).map(t => (
           <React.Fragment key={t.id}>
+            {/* UPDATED HEADER: Adds an Edit button and a Floater icon */}
             <div style={{ padding: "6px 8px", background: COLORS.offWhite, borderBottom: `1px solid ${COLORS.lightGray}`, fontSize: 12, fontWeight: 600, color: COLORS.text, display: "flex", flexDirection: "column", justifyContent: "center" }}>
-              <div>{t.name}</div>
-              <div style={{ fontSize: 9, color: COLORS.textLight }}>{(t.departments || []).join(", ")}</div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {t.name} {t.isFloater && <span title="Floater" style={{ fontSize: 10 }}>🎈</span>}
+                </span>
+                <div style={{ display: "flex", gap: 4 }}>
+                  {/* Option to view availability (existing functionality) */}
+                  {onTeacherClick && <span onClick={() => onTeacherClick(t)} style={{ cursor: "pointer", fontSize: 10 }} title="Set Availability">🕒</span>}
+                  {/* NEW Edit button */}
+                  {onEditTeacher && <span onClick={() => onEditTeacher(t)} style={{ cursor: "pointer", fontSize: 10 }} title="Edit Teacher">✏️</span>}
+                </div>
+              </div>
+              <div style={{ fontSize: 9, color: COLORS.textLight, marginTop: 2 }}>{(t.departments || []).join(", ")}</div>
             </div>
             
             {allP.map(p => {
