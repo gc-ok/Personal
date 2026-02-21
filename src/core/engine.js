@@ -185,24 +185,58 @@ export function generateSchedule(config) {
   }
 
   // --- NEW: COMMON PLC LOGIC ---
-  if (plcEnabled) {
-    logger.info("Setting up Departmental PLC blocks...");
-    const depts = [...new Set(teachers.map(t => (t.departments && t.departments[0]) || "General"))];
-    
-    // We can only schedule PLC during actual teaching periods (not Lunch, not WIN)
-    const validPlcPeriods = periodList.filter(p => p.type === "class" || p.type === "split_lunch").map(p => p.id);
+  let finalPlcGroups = []; // Array to hold the final groups to return to UI
 
-    depts.forEach((dept, index) => {
-      // Rotate PLC periods so all departments aren't off at the exact same time
-      const plcPid = validPlcPeriods[index % validPlcPeriods.length];
-      const deptTeachers = teachers.filter(t => (t.departments && t.departments[0]) === dept);
+  if (plcEnabled) {
+    // STRICT CHECK: Only use custom groups if they exist AND actually contain teachers
+    const hasValidCustomGroups = Array.isArray(config.plcGroups) && 
+                                 config.plcGroups.length > 0 && 
+                                 config.plcGroups.some(g => g.teacherIds && g.teacherIds.length > 0);
+
+    if (hasValidCustomGroups) {
+      logger.info("Applying user-defined PLC blocks...");
+      finalPlcGroups = config.plcGroups;
       
-      deptTeachers.forEach(t => {
-        teacherSchedule[t.id][plcPid] = "PLC";
-        teacherBlocked[t.id].add(plcPid);
+      finalPlcGroups.forEach(group => {
+        (group.teacherIds || []).forEach(tid => {
+          if(teacherSchedule[tid]) {
+            teacherSchedule[tid][group.period] = "PLC";
+            teacherBlocked[tid].add(group.period);
+          }
+        });
       });
-      logger.info(`Assigned Period ${plcPid} as Common PLC for ${dept} Department (${deptTeachers.length} teachers).`);
-    });
+    } 
+    // 2. Otherwise, safely fall back to AUTO-GENERATING them based on departments
+    else {
+      logger.info("Setting up Departmental PLC blocks...");
+      const depts = [...new Set(teachers.map(t => (t.departments && t.departments[0]) || "General"))];
+      
+      const validPlcPeriods = periodList.filter(p => p.type === "class" || p.type === "split_lunch").map(p => p.id);
+
+      depts.forEach((dept, index) => {
+        if (validPlcPeriods.length === 0) return; // Safeguard
+        
+        const plcPid = validPlcPeriods[index % validPlcPeriods.length];
+        const deptTeachers = teachers.filter(t => (t.departments && t.departments[0]) === dept);
+        
+        // Save the group structure for the UI Modal (added index to guarantee unique IDs)
+        const newGroup = {
+          id: `plc-${dept}-${Date.now()}-${index}`,
+          name: `${dept} PLC`,
+          period: plcPid,
+          teacherIds: deptTeachers.map(t => t.id)
+        };
+        finalPlcGroups.push(newGroup);
+
+        deptTeachers.forEach(t => {
+          if (teacherSchedule[t.id]) {
+            teacherSchedule[t.id][plcPid] = "PLC";
+            teacherBlocked[t.id].add(plcPid);
+          }
+        });
+        logger.info(`Assigned Period ${plcPid} as Common PLC for ${dept} Department (${deptTeachers.length} teachers).`);
+      });
+    }
   }
 
   constraints.forEach(c => {
@@ -407,6 +441,7 @@ export function generateSchedule(config) {
   return {
     sections, periodList, logs: logger.logs, placementHistory: logger.placementHistory, 
     conflicts, teacherSchedule, roomSchedule, teachers, rooms, periodStudentData,
+    plcGroups: finalPlcGroups, // <--- If this is missing, the UI will erase them!
     stats: { totalSections: sections.length, scheduledCount: sections.filter(s => s.period && !s.hasConflict).length, conflictCount: conflicts.length, teacherCount: teachers.length, roomCount: rooms.length, totalStudents: studentCount }
   };
 }
