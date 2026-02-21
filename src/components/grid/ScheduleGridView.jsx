@@ -194,10 +194,18 @@ export default function ScheduleGridView({ schedule, config, setSchedule, onRege
   const [editSection, setEditSection] = useState(null);
 
   // NEW STATES
-  const [plcGroups, setPlcGroups] = useState([]);
+  // Initialize with the engine's generated groups if they exist
+  const [plcGroups, setPlcGroups] = useState(schedule.plcGroups || []);
   const [teacherAvail, setTeacherAvail] = useState([]); 
   const [showPLCModal, setShowPLCModal] = useState(false);
   const [availTeacher, setAvailTeacher] = useState(null);
+
+  // Add this useEffect to sync the state if the schedule is regenerated externally
+  useEffect(() => {
+    if (schedule.plcGroups) {
+      setPlcGroups(schedule.plcGroups);
+    }
+  }, [schedule.plcGroups]);
 
   const secs = schedule.sections || [];
   const confs = schedule.conflicts || [];
@@ -224,20 +232,20 @@ export default function ScheduleGridView({ schedule, config, setSchedule, onRege
     } 
   };
 
-  // REGENERATE LOGIC
-  const triggerRegenWithConstraints = () => {
+  // REGENERATE LOGIC - Now accepts the arrays directly to avoid stale state!
+  const triggerRegenWithConstraints = (updatedPLCs = plcGroups, updatedAvail = teacherAvail) => {
     const newConfig = {
       ...config,
-      plcEnabled: plcGroups.length > 0,
-      plcGroups: plcGroups,
-      teacherAvailability: teacherAvail,
+      plcEnabled: updatedPLCs.length > 0,
+      plcGroups: updatedPLCs,
+      teacherAvailability: updatedAvail,
       maxClassSize: config.maxClassSize + 1 // Buffer for tight constraints
     };
     
     const result = generateSchedule(buildScheduleConfig(newConfig));
     setSchedule(result);
     pushH(result.sections);
-    notify("Schedule refactored with PLC and Availability constraints", "success");
+    notify("Schedule refactored with new constraints", "success");
   };
 
   const addBlankClass = () => {
@@ -305,9 +313,10 @@ export default function ScheduleGridView({ schedule, config, setSchedule, onRege
           teachers={schedule.teachers} periods={schedule.periodList} plcGroups={plcGroups}
           onClose={() => setShowPLCModal(false)}
           onSave={(newGroups) => {
-            setPlcGroups(newGroups); setShowPLCModal(false);
-            // We use setTimeout to allow the state to settle before triggering regen
-            setTimeout(() => triggerRegenWithConstraints(), 100);
+            setPlcGroups(newGroups); 
+            setShowPLCModal(false);
+            // Pass the new groups directly into the engine!
+            triggerRegenWithConstraints(newGroups, teacherAvail);
           }}
         />
       )}
@@ -318,8 +327,10 @@ export default function ScheduleGridView({ schedule, config, setSchedule, onRege
           onClose={() => setAvailTeacher(null)}
           onSave={(blocked) => {
             const newAvail = [...teacherAvail.filter(a => a.teacherId !== availTeacher.id), { teacherId: availTeacher.id, blockedPeriods: blocked }];
-            setTeacherAvail(newAvail); setAvailTeacher(null);
-            setTimeout(() => triggerRegenWithConstraints(), 100);
+            setTeacherAvail(newAvail); 
+            setAvailTeacher(null);
+            // Pass the new availability directly into the engine!
+            triggerRegenWithConstraints(plcGroups, newAvail);
           }}
         />
       )}
