@@ -269,8 +269,25 @@ export function generateSchedule(config) {
     }
   }
 
+  // --- Teacher Availability / Part-Time Blocking ---
+  if (config.teacherAvailability && config.teacherAvailability.length > 0) {
+    config.teacherAvailability.forEach(avail => {
+      avail.blockedPeriods.forEach(pid => {
+        if (teacherSchedule[avail.teacherId]) {
+          teacherSchedule[avail.teacherId][pid] = "BLOCKED";
+          teacherBlocked[avail.teacherId].add(pid);
+        }
+      });
+    });
+    logger.info(`Applied custom availability blocks for ${config.teacherAvailability.length} teachers.`);
+  }
+
+  // Keep legacy constraints for backwards compatibility
   constraints.forEach(c => {
-    if (c.type === "teacher_unavailable") teacherBlocked[c.teacherId]?.add(parseInt(c.period));
+    if (c.type === "teacher_unavailable") {
+      teacherBlocked[c.teacherId]?.add(parseInt(c.period));
+      if (teacherSchedule[c.teacherId]) teacherSchedule[c.teacherId][parseInt(c.period)] = "BLOCKED";
+    }
   });
 
   // 3. Generate Sections
@@ -368,19 +385,32 @@ export function generateSchedule(config) {
       let cost = 0;
       let fails = [];
 
+      // Check Main Teacher
       if(teacherSchedule[sec.teacher]?.[pid]) fails.push("Teacher already booked");
       if(teacherBlocked[sec.teacher]?.has(pid)) fails.push("Teacher unavailable/blocked");
+
+      // Check Co-Teacher (Inclusion)
+      if(sec.coTeacher) {
+        if(teacherSchedule[sec.coTeacher]?.[pid]) fails.push("Co-Teacher already booked");
+        if(teacherBlocked[sec.coTeacher]?.has(pid)) fails.push("Co-Teacher unavailable/blocked");
+      }
 
       if (fails.length > 0) {
         periodEvaluations.push({ period: pid, cost: Infinity, reasons: fails });
         continue;
       }
 
-      // Calculate teacher load excluding Lunch, Plan, and PLC
-      const tLoad = Object.keys(teacherSchedule[sec.teacher]||{}).filter(k => !["LUNCH", "PLC", "PLAN"].includes(teacherSchedule[sec.teacher][k])).length;
+      // Calculate teacher loads excluding non-teaching blocks
+      const excluded = ["LUNCH", "PLC", "PLAN", "BLOCKED"];
+      const tLoad = Object.keys(teacherSchedule[sec.teacher]||{}).filter(k => !excluded.includes(teacherSchedule[sec.teacher][k])).length;
       if(tLoad >= maxLoad) { cost += 500; fails.push("Exceeds target teacher load"); }
-      if(sec.room && roomSchedule[sec.room]?.[pid]) { cost += 100; fails.push("Preferred room occupied"); }
       
+      if(sec.coTeacher) {
+        const coLoad = Object.keys(teacherSchedule[sec.coTeacher]||{}).filter(k => !excluded.includes(teacherSchedule[sec.coTeacher][k])).length;
+        if(coLoad >= maxLoad) { cost += 500; fails.push("Co-Teacher exceeds target load"); }
+      }
+
+      if(sec.room && roomSchedule[sec.room]?.[pid]) { cost += 100; fails.push("Preferred room occupied"); }
       cost += (secsInPeriod[pid]||0) * 10;
       
       const sibs = sections.filter(s => s.courseId === sec.courseId && s.period === pid).length;
@@ -394,7 +424,17 @@ export function generateSchedule(config) {
     if(bestP) {
       sec.period = bestP;
       secsInPeriod[bestP]++;
-      if(sec.teacher) { if(!teacherSchedule[sec.teacher]) teacherSchedule[sec.teacher]={}; teacherSchedule[sec.teacher][bestP] = sec.id; }
+      
+      if(sec.teacher) { 
+        if(!teacherSchedule[sec.teacher]) teacherSchedule[sec.teacher]={}; 
+        teacherSchedule[sec.teacher][bestP] = sec.id; 
+      }
+      
+      // CO-TEACHER ASSIGNMENT
+      if(sec.coTeacher) { 
+        if(!teacherSchedule[sec.coTeacher]) teacherSchedule[sec.coTeacher]={}; 
+        teacherSchedule[sec.coTeacher][bestP] = sec.id; 
+      }
       
       let finalRoom = sec.room;
       if(!finalRoom || roomSchedule[finalRoom]?.[bestP]) { 
