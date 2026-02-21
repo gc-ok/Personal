@@ -52,7 +52,7 @@ export const SecCard = ({ section: s, dragItem, onDragStart, togLock, setEditSec
         </div>
       </div>
       <div style={{ color: COLORS.textLight, fontSize: 9, marginTop: 1 }}>
-        {s.teacherName || "TBD"} · {s.roomName || "—"}
+        {s.teacherName || "TBD"} {s.coTeacherName ? `& ${s.coTeacherName}` : ""} · {s.roomName || "—"}
       </div>
       <div style={{ fontSize: 9, color: COLORS.primary, fontWeight: 600, marginTop: 1 }}>
         👥 {s.enrollment}/{s.maxSize}
