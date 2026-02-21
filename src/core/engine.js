@@ -161,6 +161,7 @@ export function generateSchedule(config) {
 
   // 2. Setup Resources
   const teacherHomeRoom = {};
+  const roomOwners = {}; // NEW: Track who owns which room
   const regularRooms = rooms.filter(r => r.type === "regular");
   const labRooms = rooms.filter(r => r.type === "lab");
   const gymRooms = rooms.filter(r => r.type === "gym");
@@ -173,11 +174,21 @@ export function generateSchedule(config) {
   });
 
   sortedTeachers.forEach(t => {
+    // FLOATERS DO NOT GET A HOME ROOM
+    if (t.isFloater) return; 
+
     const isLab = (t.departments || []).some(d => d.includes("science"));
     const isGym = (t.departments || []).some(d => d.toLowerCase().includes("pe"));
-    if (isLab && labRooms.length > 0) { teacherHomeRoom[t.id] = labRooms[lIdx % labRooms.length].id; lIdx++; } 
-    else if (isGym && gymRooms.length > 0) { teacherHomeRoom[t.id] = gymRooms[0].id; } 
-    else if (regularRooms.length > 0) { if (rIdx < regularRooms.length) { teacherHomeRoom[t.id] = regularRooms[rIdx].id; rIdx++; } }
+    
+    let assignedRoom = null;
+    if (isLab && labRooms.length > 0) { assignedRoom = labRooms[lIdx % labRooms.length].id; lIdx++; } 
+    else if (isGym && gymRooms.length > 0) { assignedRoom = gymRooms[0].id; } 
+    else if (regularRooms.length > 0) { if (rIdx < regularRooms.length) { assignedRoom = regularRooms[rIdx].id; rIdx++; } }
+
+    if (assignedRoom) {
+      teacherHomeRoom[t.id] = assignedRoom;
+      roomOwners[assignedRoom] = t.id; // Map the room back to its owner
+    }
   });
 
   const teacherSchedule = {};
@@ -387,8 +398,17 @@ export function generateSchedule(config) {
       
       let finalRoom = sec.room;
       if(!finalRoom || roomSchedule[finalRoom]?.[bestP]) { 
-        const open = rooms.find(r => r.type === sec.roomType && !roomSchedule[r.id]?.[bestP]); 
-        if(open) finalRoom = open.id; 
+        const availableRooms = rooms.filter(r => r.type === sec.roomType && !roomSchedule[r.id]?.[bestP]); 
+        
+        // DYNAMIC FLOATER MAPPING: 
+        // Prioritize rooms that are physically empty but OWNED by another teacher (meaning they are on Plan/PLC)
+        availableRooms.sort((a, b) => {
+          const isOwnedA = !!roomOwners[a.id];
+          const isOwnedB = !!roomOwners[b.id];
+          return (isOwnedB ? 1 : 0) - (isOwnedA ? 1 : 0);
+        });
+
+        if(availableRooms.length > 0) finalRoom = availableRooms[0].id; 
       }
       if(finalRoom) { 
         sec.room = finalRoom; sec.roomName = rooms.find(r=>r.id===finalRoom)?.name; 
