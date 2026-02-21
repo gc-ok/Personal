@@ -599,11 +599,24 @@ export function GenericInputStep({ config: c, setConfig, onNext, onBack }) {
             </div>
             {expanded === i && (
               <div style={{ padding: 12, background: COLORS.white, border: `1px solid ${COLORS.lightGray}`, borderTop: "none", borderRadius: "0 0 8px 8px" }}>
-                <p style={{ fontSize: 12, color: COLORS.textLight, marginBottom: 8 }}>Name teachers (optional):</p>
+                <p style={{ fontSize: 12, color: COLORS.textLight, marginBottom: 8 }}>Name teachers & assign floaters:</p>
                 {Array.from({ length: d.teacherCount || 1 }, (_, ti) => (
                   <div key={ti} style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center" }}>
                     <span style={{ fontSize: 12, color: COLORS.textLight, width: 24 }}>{ti + 1}.</span>
-                    <input value={(d.teacherNames || [])[ti] || ""} onChange={e => { const n = [...(d.teacherNames || [])]; n[ti] = e.target.value; upD(i, "teacherNames", n); }} placeholder={`${d.name} Teacher ${ti + 1}`} style={{ ...INPUT_STYLE, flex: 1, width: "auto" }} />
+                    <input 
+                      value={(d.teacherNames || [])[ti] || ""} 
+                      onChange={e => { const n = [...(d.teacherNames || [])]; n[ti] = e.target.value; upD(i, "teacherNames", n); }} 
+                      placeholder={`${d.name} Teacher ${ti + 1}`} 
+                      style={{ ...INPUT_STYLE, flex: 1, width: "auto" }} 
+                    />
+                    <label style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 4, cursor: "pointer", color: COLORS.text }}>
+                      <input 
+                        type="checkbox" 
+                        checked={(d.teacherFloaters || [])[ti] || false} 
+                        onChange={e => { const f = [...(d.teacherFloaters || [])]; f[ti] = e.target.checked; upD(i, "teacherFloaters", f); }} 
+                      /> 
+                      Is Floater
+                    </label>
                   </div>
                 ))}
               </div>
