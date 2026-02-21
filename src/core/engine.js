@@ -1,3 +1,5 @@
+import { ResourceTracker } from './ResourceTracker';
+import { StandardStrategy, ABStrategy, Block4x4Strategy, TrimesterStrategy } from './strategies/ScheduleStrategies';
 // src/core/engine.js
 
 // --- Time Utilities ---
@@ -159,9 +161,18 @@ export function generateSchedule(config) {
   const teachingPeriodIds = teachingPeriods.map(p => p.id);
   const numTeachingPeriods = teachingPeriodIds.length;
 
-  // 2. Setup Resources
-  const teacherHomeRoom = {};
-  const roomOwners = {}; // NEW: Track who owns which room
+  // 2. Setup Resources & Tracker
+  // Parse safely to prevent strings from the UI breaking the math
+  const safePlanPeriods = parseInt(config.planPeriodsPerDay) || 1;
+  const effectiveSlots = isSplitLunch ? numTeachingPeriods : numTeachingPeriods - 1; 
+  
+  let dailyMaxLoad = Math.max(1, effectiveSlots - safePlanPeriods - (plcEnabled ? 1 : 0));
+  let maxLoad = config.scheduleType === "ab_block" ? (dailyMaxLoad * 2) : dailyMaxLoad;
+  
+  logger.info(`Calculated Max Load: ${maxLoad}`, { effectiveSlots, safePlanPeriods, plcEnabled });
+
+  const tracker = new ResourceTracker(teachers, rooms, maxLoad);
+
   const regularRooms = rooms.filter(r => r.type === "regular");
   const labRooms = rooms.filter(r => r.type === "lab");
   const gymRooms = rooms.filter(r => r.type === "gym");
@@ -186,20 +197,15 @@ export function generateSchedule(config) {
     else if (regularRooms.length > 0) { if (rIdx < regularRooms.length) { assignedRoom = regularRooms[rIdx].id; rIdx++; } }
 
     if (assignedRoom) {
-      teacherHomeRoom[t.id] = assignedRoom;
-      roomOwners[assignedRoom] = t.id; // Map the room back to its owner
+      tracker.setRoomOwner(assignedRoom, t.id);
     }
   });
 
-  const teacherSchedule = {};
-  const teacherBlocked = {};
-  const roomSchedule = {};
-  teachers.forEach(t => { teacherSchedule[t.id] = {}; teacherBlocked[t.id] = new Set(); });
-  rooms.forEach(r => { roomSchedule[r.id] = {}; });
+  // --- Map Existing Blocks to Universal Timeslots ---
+  const toUniv = (pid) => `FY-ALL-${pid}`;
 
-  // --- Teacher Lunch Assignments ---
   if (lunchStyle === "unit" && lunchPid) {
-    teachers.forEach(t => { teacherSchedule[t.id][lunchPid] = "LUNCH"; teacherBlocked[t.id].add(lunchPid); });
+    teachers.forEach(t => tracker.blockTeacher(t.id, toUniv(lunchPid), "LUNCH"));
   } else if (isMultiPeriod && multiLunchPids.length > 0) {
     // Distribute teachers evenly across multiple lunch periods, grouping by department
     const depts = [...new Set(teachers.map(t => (t.departments && t.departments[0]) || "General"))];
@@ -207,15 +213,14 @@ export function generateSchedule(config) {
       const deptTeachers = teachers.filter(t => (t.departments && t.departments[0]) === dept);
       deptTeachers.forEach((t, i) => {
         const assignedLunchPid = multiLunchPids[i % multiLunchPids.length];
-        teacherSchedule[t.id][assignedLunchPid] = "LUNCH";
-        teacherBlocked[t.id].add(assignedLunchPid);
+        tracker.blockTeacher(t.id, toUniv(assignedLunchPid), "LUNCH");
       });
     });
     logger.info(`Distributed teachers across multiple lunch periods: ${multiLunchPids.join(", ")}`);
   }
 
   // --- NEW: COMMON PLC LOGIC ---
-  let finalPlcGroups = []; // Array to hold the final groups to return to UI
+  let finalPlcGroups = []; 
 
   if (plcEnabled) {
     // STRICT CHECK: Only use custom groups if they exist AND actually contain teachers
@@ -229,14 +234,11 @@ export function generateSchedule(config) {
       
       finalPlcGroups.forEach(group => {
         (group.teacherIds || []).forEach(tid => {
-          if(teacherSchedule[tid]) {
-            teacherSchedule[tid][group.period] = "PLC";
-            teacherBlocked[tid].add(group.period);
-          }
+          tracker.blockTeacher(tid, toUniv(group.period), "PLC");
         });
       });
     } 
-    // 2. Otherwise, safely fall back to AUTO-GENERATING them based on departments
+    // Otherwise, safely fall back to AUTO-GENERATING them based on departments
     else {
       logger.info("Setting up Departmental PLC blocks...");
       const depts = [...new Set(teachers.map(t => (t.departments && t.departments[0]) || "General"))];
@@ -249,7 +251,6 @@ export function generateSchedule(config) {
         const plcPid = validPlcPeriods[index % validPlcPeriods.length];
         const deptTeachers = teachers.filter(t => (t.departments && t.departments[0]) === dept);
         
-        // Save the group structure for the UI Modal (added index to guarantee unique IDs)
         const newGroup = {
           id: `plc-${dept}-${Date.now()}-${index}`,
           name: `${dept} PLC`,
@@ -259,10 +260,7 @@ export function generateSchedule(config) {
         finalPlcGroups.push(newGroup);
 
         deptTeachers.forEach(t => {
-          if (teacherSchedule[t.id]) {
-            teacherSchedule[t.id][plcPid] = "PLC";
-            teacherBlocked[t.id].add(plcPid);
-          }
+          tracker.blockTeacher(t.id, toUniv(plcPid), "PLC");
         });
         logger.info(`Assigned Period ${plcPid} as Common PLC for ${dept} Department (${deptTeachers.length} teachers).`);
       });
@@ -273,10 +271,7 @@ export function generateSchedule(config) {
   if (config.teacherAvailability && config.teacherAvailability.length > 0) {
     config.teacherAvailability.forEach(avail => {
       avail.blockedPeriods.forEach(pid => {
-        if (teacherSchedule[avail.teacherId]) {
-          teacherSchedule[avail.teacherId][pid] = "BLOCKED";
-          teacherBlocked[avail.teacherId].add(pid);
-        }
+        tracker.blockTeacher(avail.teacherId, toUniv(pid), "BLOCKED");
       });
     });
     logger.info(`Applied custom availability blocks for ${config.teacherAvailability.length} teachers.`);
@@ -285,8 +280,7 @@ export function generateSchedule(config) {
   // Keep legacy constraints for backwards compatibility
   constraints.forEach(c => {
     if (c.type === "teacher_unavailable") {
-      teacherBlocked[c.teacherId]?.add(parseInt(c.period));
-      if (teacherSchedule[c.teacherId]) teacherSchedule[c.teacherId][parseInt(c.period)] = "BLOCKED";
+      tracker.blockTeacher(c.teacherId, toUniv(parseInt(c.period)), "BLOCKED");
     }
   });
 
@@ -295,7 +289,6 @@ export function generateSchedule(config) {
   const coreCourses = courses.filter(c => c.required);
   const electiveCourses = courses.filter(c => !c.required);
   const coreCount = coreCourses.length;
-  const effectiveSlots = isSplitLunch ? numTeachingPeriods : numTeachingPeriods - 1; 
   const electiveSlotsPerStudent = Math.max(0, effectiveSlots - coreCount);
 
   coreCourses.forEach(c => {
@@ -333,139 +326,74 @@ export function generateSchedule(config) {
       });
     }
   });
-
-  const teacherLoad = {};
-  teachers.forEach(t => teacherLoad[t.id] = 0);
   
-  // Assign Teachers
+  // Assign Initial Preferred Teachers/Rooms
+  // We must track 'intended' load here so sections distribute evenly across a department 
+  // BEFORE the strategy starts putting them on the grid.
+  const intendedLoad = {};
+  teachers.forEach(t => intendedLoad[t.id] = 0);
+
   [...sections].sort(() => Math.random() - 0.5).forEach(sec => {
     const candidates = teachers.filter(t => (t.departments||[]).includes(sec.department));
     const pool = candidates.length > 0 ? candidates : teachers; 
-    pool.sort((a,b) => (teacherLoad[a.id]||0) - (teacherLoad[b.id]||0));
+    
+    // Sort by intended load to round-robin the sections
+    pool.sort((a,b) => intendedLoad[a.id] - intendedLoad[b.id]);
+    
     if(pool.length > 0) {
-      const t = pool[0]; sec.teacher = t.id; sec.teacherName = t.name; teacherLoad[t.id]++;
-      if(teacherHomeRoom[t.id]) { sec.room = teacherHomeRoom[t.id]; sec.roomName = rooms.find(r=>r.id===sec.room)?.name; }
-    } else { sec.hasConflict = true; sec.conflictReason = "No Teacher"; }
+      const t = pool[0]; 
+      sec.teacher = t.id; 
+      sec.teacherName = t.name; 
+      intendedLoad[t.id]++; // <--- This prevents one teacher from getting all sections!
+      
+      const roomAssigned = Object.keys(tracker.roomOwners).find(rId => tracker.roomOwners[rId] === t.id);
+      if(roomAssigned) { sec.room = roomAssigned; sec.roomName = rooms.find(r=>r.id===roomAssigned)?.name; }
+    } else { 
+      sec.hasConflict = true; 
+      sec.conflictReason = "No Teacher"; 
+    }
   });
 
   constraints.forEach(c => {
     if(c.type === "lock_period" && c.sectionId) {
       const s = sections.find(x=>x.id === c.sectionId);
-      if(s) { s.period = parseInt(c.period); s.locked = true; }
+      if(s) { 
+        s.period = toUniv(parseInt(c.period)); 
+        s.locked = true; 
+      }
     }
   });
 
   sections.filter(s=>s.locked && s.period).forEach(s => {
-    if(s.teacher) { if(!teacherSchedule[s.teacher]) teacherSchedule[s.teacher] = {}; teacherSchedule[s.teacher][s.period] = s.id; }
-    if(s.room) { if(!roomSchedule[s.room]) roomSchedule[s.room] = {}; roomSchedule[s.room][s.period] = s.id; }
+    tracker.assignPlacement(s, s.period, s.teacher, s.coTeacher, s.room, 'FY');
   });
 
-  // 4. Greedy Placement Loop
-  const secsInPeriod = {};
-  teachingPeriodIds.forEach(id => secsInPeriod[id] = 0);
+  // 4. Delegate to Strategy 
+  let strategy;
+  if (config.scheduleType === "ab_block") {
+    logger.info("Engaging A/B Block Strategy...");
+    strategy = new ABStrategy(tracker, config, logger);
+  } else if (config.scheduleType === "4x4_block") {
+    logger.info("Engaging 4x4 Semester Block Strategy...");
+    strategy = new Block4x4Strategy(tracker, config, logger);
+  } else if (config.scheduleType === "trimester") {
+    logger.info("Engaging Trimester Strategy...");
+    strategy = new TrimesterStrategy(tracker, config, logger);
+  } else {
+    logger.info("Engaging Standard Strategy Engine...");
+    strategy = new StandardStrategy(tracker, config, logger);
+  }
   
-  // Adjusted target load to account for PLC
-  const maxLoad = Math.max(1, effectiveSlots - planPeriodsPerDay - (plcEnabled ? 1 : 0));
-
-  const placementOrder = [...sections].filter(s => !s.locked && !s.hasConflict).sort((a,b) => {
-    if (a.isCore !== b.isCore) return a.isCore ? -1 : 1;
-    return 0;
-  });
-
-  placementOrder.forEach(sec => {
-    let bestP = null;
-    let minCost = Infinity;
-    const shuffled = [...teachingPeriodIds].sort(()=>Math.random()-0.5);
-    
-    let periodEvaluations = []; 
-
-    for(const pid of shuffled) {
-      if(pid === "WIN") continue;
-
-      let cost = 0;
-      let fails = [];
-
-      // Check Main Teacher
-      if(teacherSchedule[sec.teacher]?.[pid]) fails.push("Teacher already booked");
-      if(teacherBlocked[sec.teacher]?.has(pid)) fails.push("Teacher unavailable/blocked");
-
-      // Check Co-Teacher (Inclusion)
-      if(sec.coTeacher) {
-        if(teacherSchedule[sec.coTeacher]?.[pid]) fails.push("Co-Teacher already booked");
-        if(teacherBlocked[sec.coTeacher]?.has(pid)) fails.push("Co-Teacher unavailable/blocked");
-      }
-
-      if (fails.length > 0) {
-        periodEvaluations.push({ period: pid, cost: Infinity, reasons: fails });
-        continue;
-      }
-
-      // Calculate teacher loads excluding non-teaching blocks
-      const excluded = ["LUNCH", "PLC", "PLAN", "BLOCKED"];
-      const tLoad = Object.keys(teacherSchedule[sec.teacher]||{}).filter(k => !excluded.includes(teacherSchedule[sec.teacher][k])).length;
-      if(tLoad >= maxLoad) { cost += 500; fails.push("Exceeds target teacher load"); }
-      
-      if(sec.coTeacher) {
-        const coLoad = Object.keys(teacherSchedule[sec.coTeacher]||{}).filter(k => !excluded.includes(teacherSchedule[sec.coTeacher][k])).length;
-        if(coLoad >= maxLoad) { cost += 500; fails.push("Co-Teacher exceeds target load"); }
-      }
-
-      if(sec.room && roomSchedule[sec.room]?.[pid]) { cost += 100; fails.push("Preferred room occupied"); }
-      cost += (secsInPeriod[pid]||0) * 10;
-      
-      const sibs = sections.filter(s => s.courseId === sec.courseId && s.period === pid).length;
-      if(!sec.isCore && sibs > 0) { cost += 200; fails.push("Elective overlap"); }
-
-      periodEvaluations.push({ period: pid, cost, reasons: fails });
-
-      if(cost < minCost) { minCost = cost; bestP = pid; }
-    }
-
-    if(bestP) {
-      sec.period = bestP;
-      secsInPeriod[bestP]++;
-      
-      if(sec.teacher) { 
-        if(!teacherSchedule[sec.teacher]) teacherSchedule[sec.teacher]={}; 
-        teacherSchedule[sec.teacher][bestP] = sec.id; 
-      }
-      
-      // CO-TEACHER ASSIGNMENT
-      if(sec.coTeacher) { 
-        if(!teacherSchedule[sec.coTeacher]) teacherSchedule[sec.coTeacher]={}; 
-        teacherSchedule[sec.coTeacher][bestP] = sec.id; 
-      }
-      
-      let finalRoom = sec.room;
-      if(!finalRoom || roomSchedule[finalRoom]?.[bestP]) { 
-        const availableRooms = rooms.filter(r => r.type === sec.roomType && !roomSchedule[r.id]?.[bestP]); 
-        
-        // DYNAMIC FLOATER MAPPING: 
-        // Prioritize rooms that are physically empty but OWNED by another teacher (meaning they are on Plan/PLC)
-        availableRooms.sort((a, b) => {
-          const isOwnedA = !!roomOwners[a.id];
-          const isOwnedB = !!roomOwners[b.id];
-          return (isOwnedB ? 1 : 0) - (isOwnedA ? 1 : 0);
-        });
-
-        if(availableRooms.length > 0) finalRoom = availableRooms[0].id; 
-      }
-      if(finalRoom) { 
-        sec.room = finalRoom; sec.roomName = rooms.find(r=>r.id===finalRoom)?.name; 
-        if(!roomSchedule[finalRoom]) roomSchedule[finalRoom]={}; 
-        roomSchedule[finalRoom][bestP] = sec.id; 
-      }
-      logger.logPlacement(sec, bestP, minCost, periodEvaluations);
-    } else {
-      sec.hasConflict = true; sec.conflictReason = "Scheduling Gridlock (Check Logger)"; 
-      conflicts.push({ type: "unscheduled", message: `${sec.courseName} S${sec.sectionNum}: No valid period found`, sectionId: sec.id });
-      logger.logFailure(sec, periodEvaluations);
-    }
-  });
+  const strategyConflicts = strategy.execute(sections, periodList, rooms);
+  conflicts.push(...strategyConflicts);
 
   // 5. Lunch Waves Processing
   if (isSplitLunch && lunchPid) {
-    const lunchSections = sections.filter(s => s.period === lunchPid && !s.hasConflict);
+    // FIX: Translate the lunch period ID into the Universal TimeSlot format (e.g., 'FY-ALL-4')
+    // so the filter can actually find the scheduled classes!
+    const univLunchPid = toUniv(lunchPid);
+    
+    const lunchSections = sections.filter(s => s.period === univLunchPid && !s.hasConflict);
     const depts = [...new Set(lunchSections.map(s => s.department))];
     const deptWaveMap = {};
     const waveCounts = Array(numWaves).fill(0);
@@ -483,24 +411,49 @@ export function generateSchedule(config) {
       for(let w=0; w<numWaves; w++) { if(waveCounts[w] < minVal) { minVal = waveCounts[w]; bestWave = w; } }
       deptWaveMap[dept] = bestWave + 1; waveCounts[bestWave] += studentCountInDept;
     });
+    
     lunchSections.forEach(s => { s.lunchWave = deptWaveMap[s.department]; });
   }
 
-  // 6. Analytics Generation
+  // 6. Analytics Generation (Term-Aware)
   const periodStudentData = {};
+  const isAB = config.scheduleType === "ab_block";
+  const is4x4 = config.scheduleType === "4x4_block";
+  const isTri = config.scheduleType === "trimester";
+
   teachingPeriodIds.forEach(pid => {
-    const pSecs = sections.filter(s => s.period === pid && !s.hasConflict);
-    const seats = pSecs.reduce((sum, s) => sum + (s.enrollment||0), 0);
-    let unaccounted = Math.max(0, studentCount - seats);
+    const pObj = periodList.find(p => p.id === pid) || {};
+    let unaccounted = 0;
+    let seats = 0;
     let atLunchCount = 0;
-    
+
+    // Calculate term-aware averages for accurate column capacity
+    if (isAB) {
+       const aSeats = sections.filter(s => s.period === `FY-A-${pid}` && !s.hasConflict).reduce((sum, s) => sum + (s.enrollment||0), 0);
+       const bSeats = sections.filter(s => s.period === `FY-B-${pid}` && !s.hasConflict).reduce((sum, s) => sum + (s.enrollment||0), 0);
+       seats = Math.round((aSeats + bSeats) / 2);
+    } else if (is4x4) {
+       const s1Seats = sections.filter(s => s.period === `S1-ALL-${pid}` && !s.hasConflict).reduce((sum, s) => sum + (s.enrollment||0), 0);
+       const s2Seats = sections.filter(s => s.period === `S2-ALL-${pid}` && !s.hasConflict).reduce((sum, s) => sum + (s.enrollment||0), 0);
+       seats = Math.round((s1Seats + s2Seats) / 2);
+    } else if (isTri) {
+       const t1Seats = sections.filter(s => s.period === `T1-ALL-${pid}` && !s.hasConflict).reduce((sum, s) => sum + (s.enrollment||0), 0);
+       const t2Seats = sections.filter(s => s.period === `T2-ALL-${pid}` && !s.hasConflict).reduce((sum, s) => sum + (s.enrollment||0), 0);
+       const t3Seats = sections.filter(s => s.period === `T3-ALL-${pid}` && !s.hasConflict).reduce((sum, s) => sum + (s.enrollment||0), 0);
+       seats = Math.round((t1Seats + t2Seats + t3Seats) / 3);
+    } else {
+       const univPid = pid === "WIN" ? "WIN" : `FY-ALL-${pid}`;
+       seats = sections.filter(s => s.period === univPid && !s.hasConflict).reduce((sum, s) => sum + (s.enrollment||0), 0);
+    }
+
+    unaccounted = Math.max(0, studentCount - seats);
+
     if (lunchStyle === "unit" && pid === lunchPid) {
       unaccounted = 0;
       atLunchCount = studentCount;
     } else if (lunchStyle === "split" && pid === lunchPid) {
       atLunchCount = "Waves";
     } else if (isMultiPeriod && multiLunchPids.includes(pid)) {
-      // Estimate students eating during this block
       atLunchCount = Math.floor(studentCount / multiLunchPids.length);
       unaccounted = Math.max(0, studentCount - seats - atLunchCount);
     } else if (pid === "WIN") {
@@ -508,34 +461,96 @@ export function generateSchedule(config) {
     }
 
     periodStudentData[pid] = {
-      seatsInClass: seats, unaccounted: unaccounted,
-      atLunch: atLunchCount,
-      sectionCount: pSecs.length
+      seatsInClass: seats, unaccounted: unaccounted, atLunch: atLunchCount, 
+      sectionCount: sections.filter(s => s.period && s.period.includes(`-${pid}`) && !s.hasConflict).length
     };
-    
-    // --- THE FIX: Look up the actual period object to check its type ---
-    const pObj = periodList.find(p => p.id === pid) || {};
-    
+
     if(unaccounted > 50 && pObj.type !== "unit_lunch" && pObj.type !== "win") {
-      conflicts.push({ type: "coverage", message: `Period ${pid}: ${unaccounted} students unaccounted for.` });
+      conflicts.push({ type: "coverage", message: `Period ${pid}: ${unaccounted} students unaccounted for on average.` });
     }
   });
 
   teachers.forEach(t => {
-    const teaching = Object.keys(teacherSchedule[t.id] || {}).filter(k => !["LUNCH", "PLC", "PLAN"].includes(teacherSchedule[t.id][k])).length;
+    // BUGFIX: Reference the tracker's schedule state, not the deleted local variable
+    const teaching = Object.keys(tracker.teacherSchedule[t.id] || {}).filter(k => !["LUNCH", "PLC", "PLAN", "BLOCKED"].includes(tracker.teacherSchedule[t.id][k])).length;
     const free = effectiveSlots - teaching;
-    // Notify if they don't have enough free periods. 
-    // We expect them to have planPeriodsPerDay + 1 for PLC (if enabled).
+    
     const expectedFree = planPeriodsPerDay + (plcEnabled ? 1 : 0);
     if (free < expectedFree) { 
       conflicts.push({ type: "plan_violation", message: `${t.name} has ${free} free periods (needs ${expectedFree} for Plan/PLC)`, teacherId: t.id }); 
     }
   });
 
+  // --- UI Adapter Layer (Option 2 - Strict Mapping) ---
+  const uiTeacherSchedule = {};
+  const uiRoomSchedule = {};
+
+  teachers.forEach(t => uiTeacherSchedule[t.id] = {});
+  rooms.forEach(r => uiRoomSchedule[r.id] = {});
+
+  const toUiPid = (univId) => {
+    if (!univId) return null;
+    if (univId === "WIN" || univId === "LUNCH" || univId === "PLC" || univId === "BLOCKED") return univId;
+    
+    // Standard: "FY-ALL-1" -> 1
+    if (univId.startsWith("FY-ALL-")) {
+      const raw = univId.replace("FY-ALL-", "");
+      return isNaN(raw) ? raw : Number(raw);
+    }
+    
+    // A/B Block: "FY-A-1" -> "A-1"
+    if (univId.startsWith("FY-A-") || univId.startsWith("FY-B-")) {
+      const raw = univId.replace("FY-A-", "").replace("FY-B-", "");
+      return `${univId.charAt(3)}-${isNaN(raw) ? raw : Number(raw)}`; // "A-1" or "B-1"
+    }
+
+    // 4x4 Semester: "S1-ALL-1" -> "S1-1"
+    if (univId.startsWith("S1-") || univId.startsWith("S2-")) {
+      const raw = univId.replace("S1-ALL-", "").replace("S2-ALL-", "");
+      return `${univId.substring(0, 2)}-${isNaN(raw) ? raw : Number(raw)}`;
+    }
+
+    // Trimester: "T1-ALL-1" -> "T1-1"
+    if (univId.startsWith("T1-") || univId.startsWith("T2-") || univId.startsWith("T3-")) {
+      const raw = univId.replace("T1-ALL-", "").replace("T2-ALL-", "").replace("T3-ALL-", "");
+      return `${univId.substring(0, 2)}-${isNaN(raw) ? raw : Number(raw)}`;
+    }
+    
+    return univId; 
+  };
+
+  sections.forEach(sec => {
+    if (sec.period) sec.period = toUiPid(sec.period);
+  });
+
+  Object.keys(tracker.teacherSchedule).forEach(tId => {
+    Object.keys(tracker.teacherSchedule[tId]).forEach(univId => {
+      const uiId = toUiPid(univId);
+      uiTeacherSchedule[tId][uiId] = tracker.teacherSchedule[tId][univId];
+    });
+  });
+
+  Object.keys(tracker.roomSchedule).forEach(rId => {
+    Object.keys(tracker.roomSchedule[rId]).forEach(univId => {
+      const uiId = toUiPid(univId);
+      uiRoomSchedule[rId][uiId] = tracker.roomSchedule[rId][univId];
+    });
+  });
+
   return {
     sections, periodList, logs: logger.logs, placementHistory: logger.placementHistory, 
-    conflicts, teacherSchedule, roomSchedule, teachers, rooms, periodStudentData,
-    plcGroups: finalPlcGroups, // <--- If this is missing, the UI will erase them!
-    stats: { totalSections: sections.length, scheduledCount: sections.filter(s => s.period && !s.hasConflict).length, conflictCount: conflicts.length, teacherCount: teachers.length, roomCount: rooms.length, totalStudents: studentCount }
+    conflicts, 
+    teacherSchedule: uiTeacherSchedule, 
+    roomSchedule: uiRoomSchedule,       
+    teachers, rooms, periodStudentData,
+    plcGroups: finalPlcGroups, 
+    stats: { 
+      totalSections: sections.length, 
+      scheduledCount: sections.filter(s => s.period && !s.hasConflict).length, 
+      conflictCount: conflicts.length, 
+      teacherCount: teachers.length, 
+      roomCount: rooms.length, 
+      totalStudents: studentCount 
+    }
   };
 }
