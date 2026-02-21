@@ -54,6 +54,40 @@ function buildScheduleConfig(config) {
 
 // --- MODAL COMPONENTS ---
 
+const EditTeacherModal = ({ teacher, onClose, onSave }) => {
+  const [formData, setFormData] = useState({ ...teacher });
+  const handleChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    setFormData(prev => ({ ...prev, [name]: type === 'checkbox' ? checked : value }));
+  };
+
+  return (
+    <div style={modalOverlayStyle}>
+      <div style={{ ...modalContentStyle, width: 400 }}>
+        <h3 style={{ margin: "0 0 20px 0", color: COLORS.primary }}>Edit Teacher</h3>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14, marginBottom: 24 }}>
+          <label style={{ fontSize: 11, fontWeight: 700, color: COLORS.textLight, textTransform: "uppercase" }}>Teacher Name
+            <input name="name" value={formData.name} onChange={handleChange} style={inputStyle} />
+          </label>
+          <div style={{ padding: "12px", background: COLORS.offWhite, borderRadius: 8, border: `1px solid ${COLORS.lightGray}` }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+              <input type="checkbox" name="isFloater" checked={formData.isFloater || false} onChange={handleChange} />
+              <strong>Is Floater (No Home Room)</strong>
+            </label>
+            <p style={{ fontSize: 11, color: COLORS.textLight, margin: "6px 0 0 0", lineHeight: 1.4 }}>
+              Floaters do not get a dedicated home room. The engine will dynamically map their classes to rooms that are empty because the owning teacher is on Plan/PLC.
+            </p>
+          </div>
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button onClick={onClose} style={btnStyle(COLORS.lightGray, COLORS.text)}>Cancel</button>
+          <button onClick={() => onSave(formData)} style={btnStyle(COLORS.primary, COLORS.white)}>Save & Refactor Schedule</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const EditSectionModal = ({ section, schedule, onClose, onSave, onDelete }) => {
   const [formData, setFormData] = useState({ ...section });
   const handleChange = (e) => {
@@ -200,6 +234,7 @@ export default function ScheduleGridView({ schedule, config, setSchedule, onRege
   const [teacherAvail, setTeacherAvail] = useState([]); 
   const [showPLCModal, setShowPLCModal] = useState(false);
   const [availTeacher, setAvailTeacher] = useState(null);
+  const [editTeacher, setEditTeacher] = useState(null); // <--- ADD THIS STATE
 
   // Add this useEffect to sync the state if the schedule is regenerated externally
   useEffect(() => {
@@ -234,13 +269,14 @@ export default function ScheduleGridView({ schedule, config, setSchedule, onRege
   };
 
   // REGENERATE LOGIC - Now accepts the arrays directly to avoid stale state!
-  const triggerRegenWithConstraints = (updatedPLCs = plcGroups, updatedAvail = teacherAvail) => {
+  const triggerRegenWithConstraints = (updatedPLCs = plcGroups, updatedAvail = teacherAvail, updatedTeachers = schedule.teachers) => {
     const newConfig = {
       ...config,
       plcEnabled: updatedPLCs.length > 0,
       plcGroups: updatedPLCs,
       teacherAvailability: updatedAvail,
-      maxClassSize: config.maxClassSize + 1 // Buffer for tight constraints
+      teachers: updatedTeachers, // <--- PASS THE NEW TEACHERS HERE
+      maxClassSize: config.maxClassSize + 1 
     };
     
     const result = generateSchedule(buildScheduleConfig(newConfig));
@@ -305,6 +341,18 @@ export default function ScheduleGridView({ schedule, config, setSchedule, onRege
             updated.period = parseInt(updated.period); updated.enrollment = parseInt(updated.enrollment);
             const ns = exists ? secs.map(s => s.id === updated.id ? updated : s) : [...secs, updated];
             pushH(ns); setSchedule({ ...schedule, sections: ns }); setEditSection(null); notify("✅ Schedule updated");
+          }}
+        />
+      )}
+
+      {editTeacher && (
+        <EditTeacherModal
+          teacher={editTeacher}
+          onClose={() => setEditTeacher(null)}
+          onSave={(updatedTeacher) => {
+            const newTeachers = schedule.teachers.map(t => t.id === updatedTeacher.id ? updatedTeacher : t);
+            setEditTeacher(null);
+            triggerRegenWithConstraints(plcGroups, teacherAvail, newTeachers);
           }}
         />
       )}
@@ -380,6 +428,7 @@ export default function ScheduleGridView({ schedule, config, setSchedule, onRege
           <TeacherGrid 
             schedule={schedule} config={config} fDept={fDept} setEditSection={setEditSection} 
             onTeacherClick={(t) => setAvailTeacher(t)} // To trigger Avail modal
+            onEditTeacher={(t) => setEditTeacher(t)}
           />
         )}
         {vm === "rooms" && <RoomGrid schedule={schedule} />}
