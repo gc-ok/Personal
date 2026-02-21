@@ -126,8 +126,12 @@ export function generateSchedule(config) {
     }
   }
 
+  const lunchStyle = lunchConfig.style || "unit";
   const lunchPid = lunchConfig.lunchPeriod; 
-  const isSplitLunch = lunchConfig.style === "split";
+  const multiLunchPids = lunchConfig.lunchPeriods || []; // Array of period IDs e.g. [4, 5]
+  const isSplitLunch = lunchStyle === "split";
+  const isMultiPeriod = lunchStyle === "multi_period";
+  
   const lunchDuration = lunchConfig.lunchDuration || 30;
   const numWaves = lunchConfig.numWaves || 3;
   const minClassTime = lunchConfig.minClassTime || 30;
@@ -135,14 +139,16 @@ export function generateSchedule(config) {
 
   periodList = periodList.map(p => {
     let type = p.type || "class";
-    if (p.id === lunchPid) {
-      type = isSplitLunch ? "split_lunch" : "unit_lunch";
-      if (isSplitLunch) {
-        const cafeteriaReq = lunchDuration * numWaves;
-        const pedagogicalReq = minClassTime + lunchDuration;
-        const required = Math.max(cafeteriaReq, pedagogicalReq);
-        if (p.duration < (required - 2)) conflicts.push({ type: "coverage", message: `CRITICAL: Period ${p.id} is ${p.duration}m. Needs ${required}m to satisfy cafeteria & learning constraints.` });
-      }
+    if (lunchStyle === "split" && p.id === lunchPid) {
+      type = "split_lunch";
+      const cafeteriaReq = lunchDuration * numWaves;
+      const pedagogicalReq = minClassTime + lunchDuration;
+      const required = Math.max(cafeteriaReq, pedagogicalReq);
+      if (p.duration < (required - 2)) conflicts.push({ type: "coverage", message: `CRITICAL: Period ${p.id} is ${p.duration}m. Needs ${required}m to satisfy cafeteria & learning constraints.` });
+    } else if (lunchStyle === "unit" && p.id === lunchPid) {
+      type = "unit_lunch";
+    } else if (isMultiPeriod && multiLunchPids.includes(p.id)) {
+      type = "multi_lunch";
     } else if (p.id === winPid) {
       type = "win";
     }
@@ -180,8 +186,21 @@ export function generateSchedule(config) {
   teachers.forEach(t => { teacherSchedule[t.id] = {}; teacherBlocked[t.id] = new Set(); });
   rooms.forEach(r => { roomSchedule[r.id] = {}; });
 
-  if (!isSplitLunch && lunchPid) {
+  // --- Teacher Lunch Assignments ---
+  if (lunchStyle === "unit" && lunchPid) {
     teachers.forEach(t => { teacherSchedule[t.id][lunchPid] = "LUNCH"; teacherBlocked[t.id].add(lunchPid); });
+  } else if (isMultiPeriod && multiLunchPids.length > 0) {
+    // Distribute teachers evenly across multiple lunch periods, grouping by department
+    const depts = [...new Set(teachers.map(t => (t.departments && t.departments[0]) || "General"))];
+    depts.forEach(dept => {
+      const deptTeachers = teachers.filter(t => (t.departments && t.departments[0]) === dept);
+      deptTeachers.forEach((t, i) => {
+        const assignedLunchPid = multiLunchPids[i % multiLunchPids.length];
+        teacherSchedule[t.id][assignedLunchPid] = "LUNCH";
+        teacherBlocked[t.id].add(assignedLunchPid);
+      });
+    });
+    logger.info(`Distributed teachers across multiple lunch periods: ${multiLunchPids.join(", ")}`);
   }
 
   // --- NEW: COMMON PLC LOGIC ---
@@ -413,16 +432,31 @@ export function generateSchedule(config) {
     const pSecs = sections.filter(s => s.period === pid && !s.hasConflict);
     const seats = pSecs.reduce((sum, s) => sum + (s.enrollment||0), 0);
     let unaccounted = Math.max(0, studentCount - seats);
+    let atLunchCount = 0;
     
-    if (!isSplitLunch && pid === lunchPid) unaccounted = 0;
-    if (pid === "WIN") unaccounted = 0;
+    if (lunchStyle === "unit" && pid === lunchPid) {
+      unaccounted = 0;
+      atLunchCount = studentCount;
+    } else if (lunchStyle === "split" && pid === lunchPid) {
+      atLunchCount = "Waves";
+    } else if (isMultiPeriod && multiLunchPids.includes(pid)) {
+      // Estimate students eating during this block
+      atLunchCount = Math.floor(studentCount / multiLunchPids.length);
+      unaccounted = Math.max(0, studentCount - seats - atLunchCount);
+    } else if (pid === "WIN") {
+      unaccounted = 0;
+    }
 
     periodStudentData[pid] = {
       seatsInClass: seats, unaccounted: unaccounted,
-      atLunch: (pid === lunchPid) ? (isSplitLunch ? "Waves" : studentCount) : 0,
+      atLunch: atLunchCount,
       sectionCount: pSecs.length
     };
-    if(unaccounted > 50 && !(pid === lunchPid && !isSplitLunch) && pid !== "WIN") {
+    
+    // --- THE FIX: Look up the actual period object to check its type ---
+    const pObj = periodList.find(p => p.id === pid) || {};
+    
+    if(unaccounted > 50 && pObj.type !== "unit_lunch" && pObj.type !== "win") {
       conflicts.push({ type: "coverage", message: `Period ${pid}: ${unaccounted} students unaccounted for.` });
     }
   });
