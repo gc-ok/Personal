@@ -113,11 +113,19 @@ const EditSectionModal = ({ section, schedule, onClose, onSave, onDelete }) => {
               <input type="number" name="enrollment" value={formData.enrollment} onChange={handleChange} style={inputStyle} />
             </label>
           </div>
-          <label style={{ fontSize: 11, fontWeight: 700, color: COLORS.textLight, textTransform: "uppercase" }}>Teacher
-            <select name="teacher" value={formData.teacher} onChange={handleChange} style={inputStyle}>
-              {schedule.teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-            </select>
-          </label>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <label style={{ fontSize: 11, fontWeight: 700, color: COLORS.textLight, textTransform: "uppercase" }}>Main Teacher
+              <select name="teacher" value={formData.teacher} onChange={handleChange} style={inputStyle}>
+                {schedule.teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </label>
+            <label style={{ fontSize: 11, fontWeight: 700, color: COLORS.textLight, textTransform: "uppercase" }}>Co-Teacher (Inclusion)
+              <select name="coTeacher" value={formData.coTeacher || ""} onChange={handleChange} style={inputStyle}>
+                <option value="">-- None --</option>
+                {schedule.teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </label>
+          </div>
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
             <input type="checkbox" name="locked" checked={formData.locked} onChange={handleChange} />
             <strong>Lock Class</strong>
@@ -338,6 +346,10 @@ export default function ScheduleGridView({ schedule, config, setSchedule, onRege
             const exists = secs.find(s => s.id === updated.id);
             const teacherObj = schedule.teachers.find(t => t.id === updated.teacher);
             updated.teacherName = teacherObj?.name || "Unassigned";
+            
+            // --- NEW: Map the Co-Teacher Name ---
+            updated.coTeacherName = updated.coTeacher ? schedule.teachers.find(t => t.id === updated.coTeacher)?.name : null;
+            
             updated.period = parseInt(updated.period); updated.enrollment = parseInt(updated.enrollment);
             const ns = exists ? secs.map(s => s.id === updated.id ? updated : s) : [...secs, updated];
             pushH(ns); setSchedule({ ...schedule, sections: ns }); setEditSection(null); notify("✅ Schedule updated");
