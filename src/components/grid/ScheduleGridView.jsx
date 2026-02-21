@@ -28,8 +28,9 @@ function buildScheduleConfig(config) {
     periodLength: config.periodLength || 50,
     passingTime: config.passingTime || 5,
     lunchConfig: {
-      style: config.lunchConfig?.style || config.lunchStyle || "unit",
-      lunchPeriod: config.lunchConfig?.lunchPeriod ?? config.lunchPeriod ?? Math.ceil(pc / 2),
+      style: config.lunchConfig?.style || config.lunchStyle || "unit", // "unit", "split", "multi_period"
+      lunchPeriod: config.lunchConfig?.lunchPeriod ?? config.lunchPeriod, // for unit/split
+      lunchPeriods: config.lunchConfig?.lunchPeriods || config.lunchPeriods || [], // for multi_period arrays like [4, 5]
       lunchDuration: config.lunchConfig?.lunchDuration || 30,
       numWaves: config.lunchConfig?.numWaves || 1,
       minClassTime: config.lunchConfig?.minClassTime || 45
