@@ -10,7 +10,13 @@ const getDeptColor = (deptName) => {
 
 // Generic Period Header Component (can be moved to a Shared file later)
 export const PeriodHeader = ({ p, isLast }) => {
-  const bgMap = { class: COLORS.primary, split_lunch: COLORS.secondary, unit_lunch: COLORS.warning, win: COLORS.darkGray };
+  const bgMap = { 
+    class: COLORS.primary, 
+    split_lunch: COLORS.secondary, 
+    multi_lunch: COLORS.secondary, // <--- Add this
+    unit_lunch: COLORS.warning, 
+    win: COLORS.darkGray 
+  };
   return (
     <div style={{
       padding: "6px 4px", textAlign: "center", fontWeight: 700, fontSize: 11, color: COLORS.white,
