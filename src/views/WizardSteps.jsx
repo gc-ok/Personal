@@ -543,8 +543,16 @@ export function GenericInputStep({ config: c, setConfig, onNext, onBack }) {
     depts.forEach(dept => {
       const tc = dept.teacherCount || 1;
       const names = dept.teacherNames || [];
+      const floaters = dept.teacherFloaters || []; // Catch the floaters array
+      
       for (let i = 0; i < tc; i++) {
-        teachers.push({ id: `${dept.id}_t${i + 1}`, name: names[i] || `${dept.name} Teacher ${i + 1}`, departments: [dept.id], planPeriods: planP, isFloater: false });
+        teachers.push({ 
+          id: `${dept.id}_t${i + 1}`, 
+          name: names[i] || `${dept.name} Teacher ${i + 1}`, 
+          departments: [dept.id], 
+          planPeriods: planP, 
+          isFloater: floaters[i] || false // Map it here!
+        });
       }
       const isPE = dept.id === "pe" || dept.name.toLowerCase().includes("pe") || dept.name.toLowerCase().includes("physical");
       const sectionMax = isPE ? Math.max(ms, 40) : ms;
@@ -665,7 +673,15 @@ export function CSVUploadStep({ config: c, setConfig, onNext, onBack }) {
   };
   const cont = () => {
     const teachers = [], courses = [], rooms = [];
-    if (pd.teachers?.rows) pd.teachers.rows.forEach((r, i) => { const m = cm.teachers || {}; teachers.push({ id: `t_${i}`, name: m.name !== undefined ? r[m.name] : `Teacher ${i+1}`, departments: [m.department !== undefined ? r[m.department] : "general"], isFloater: false }); });
+    if (pd.teachers?.rows) pd.teachers.rows.forEach((r, i) => { 
+      const m = cm.teachers || {}; 
+      teachers.push({ 
+        id: `t_${i}`, 
+        name: m.name !== undefined ? r[m.name] : `Teacher ${i+1}`, 
+        departments: [m.department !== undefined ? r[m.department] : "general"], 
+        isFloater: m.isFloater !== undefined ? (r[m.isFloater]?.toLowerCase() === "true" || r[m.isFloater]?.toLowerCase() === "yes") : false 
+      }); 
+    });
     if (pd.courses?.rows) pd.courses.rows.forEach((r, i) => { const m = cm.courses || {}; courses.push({ id: `c_${i}`, name: m.name !== undefined ? r[m.name] : `Course ${i+1}`, department: m.department !== undefined ? r[m.department] : "general", maxSize: m.maxSize !== undefined ? parseInt(r[m.maxSize]) || 30 : 30, sections: m.sections !== undefined ? parseInt(r[m.sections]) || 1 : 1, required: m.required !== undefined ? r[m.required]?.toLowerCase() === "yes" : true }); });
     if (pd.rooms?.rows) pd.rooms.rows.forEach((r, i) => { const m = cm.rooms || {}; rooms.push({ id: `r_${i}`, name: m.name !== undefined ? r[m.name] : `Room ${i+1}`, type: m.type !== undefined ? r[m.type] : "regular", capacity: m.capacity !== undefined ? parseInt(r[m.capacity]) || 30 : 30 }); });
     else { for (let i = 0; i < 20; i++) rooms.push({ id: `r_${i}`, name: `Room ${101+i}`, type: "regular", capacity: 30 }); rooms.push({ id: "lab_0", name: "Lab 1", type: "lab", capacity: 30 }); rooms.push({ id: "lab_1", name: "Lab 2", type: "lab", capacity: 30 }); }
