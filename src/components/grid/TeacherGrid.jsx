@@ -60,16 +60,20 @@ export default function TeacherGrid({ schedule, config, fDept, setEditSection, o
             </div>
             
             {allP.map(p => {
-              const s = secs.find(x => x.teacher === t.id && x.period === p.id);
+              // Now checks if the teacher is the main OR the co-teacher
+              const s = secs.find(x => (x.teacher === t.id || x.coTeacher === t.id) && x.period === p.id);
+              
               const status = teacherSchedule?.[t.id]?.[p.id];
               const isLunch = status === "LUNCH";
               const isPLC = status === "PLC";
+              const isBlocked = status === "BLOCKED"; // Catch the new status!
               const isNT = p.type === "unit_lunch" || p.type === "win";
+              const isCoTeaching = s && s.coTeacher === t.id; // Flag for UI
 
               return (
                 <div key={`${t.id}-${p.id}`} style={{ padding: 4, borderBottom: `1px solid ${COLORS.lightGray}`, borderRight: `1px solid ${COLORS.lightGray}`, minHeight: 50, background: isNT ? "#F1F5F9" : isLunch ? `${COLORS.warning}12` : COLORS.white, display: "flex", alignItems: "stretch" }}>
                   
-                  {/* BUG FIX: Visualizing the Staggered Lunch Waves */}
+                  {/* Visualizing the Staggered Lunch Waves */}
                   {s && p.type === "split_lunch" && s.lunchWave ? (
                     <div style={{ display: "flex", width: "100%", gap: 4 }}>
                       {Array.from({ length: numWaves }).map((_, wIdx) => {
@@ -97,10 +101,10 @@ export default function TeacherGrid({ schedule, config, fDept, setEditSection, o
                     </div>
                   ) : s ? (
                     <div 
-                      onClick={() => setEditSection && setEditSection(s)} // <-- 1. Add click handler
+                      onClick={() => setEditSection && setEditSection(s)} 
                       style={{ 
                       width: "100%", 
-                      background: `${getDeptColor(s.department)}15`, // 15% opacity background
+                      background: `${getDeptColor(s.department)}15`, 
                       borderLeft: `4px solid ${getDeptColor(s.department)}`, 
                       color: COLORS.text, 
                       padding: "4px 8px", 
@@ -111,18 +115,19 @@ export default function TeacherGrid({ schedule, config, fDept, setEditSection, o
                       justifyContent: "center",
                       cursor: "pointer"
                     }}>
-                      <span style={{ fontWeight: 700 }}>{s.courseName}</span>
+                      <span style={{ fontWeight: 700 }}>{s.courseName} {isCoTeaching && "🤝"}</span>
                       <span style={{ fontSize: 9, fontWeight: 500 }}>{s.roomName} · 👥{s.enrollment}</span>
                     </div>
+                  ) : isBlocked ? (
+                    // VISUALIZE THE UNAVAILABLE PERIOD
+                    <div style={{ width: "100%", color: COLORS.danger, fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", background: `${COLORS.danger}15` }}>🚫 UNAVAIL</div>
                   ) : isLunch ? (
                     <div style={{ width: "100%", color: COLORS.warning, fontWeight: 700, fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center" }}>🥗 LUNCH</div>
                   ) : isNT ? (
                     <div style={{ width: "100%", color: COLORS.midGray, fontSize: 10, display: "flex", alignItems: "center", justifyContent: "center" }}>{p.type.toUpperCase()}</div>
                   ) : isPLC ? (
-                    // <-- 2. Render PLC Block
                     <div style={{ width: "100%", color: COLORS.secondary, fontSize: 10, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", background: `${COLORS.secondary}15` }}>🤝 PLC</div>
                   ) : (
-                    // <-- 3. Render standard Plan
                     <div 
                       className="empty-slot-hover"
                       onClick={() => {
