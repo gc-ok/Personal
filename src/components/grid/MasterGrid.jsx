@@ -3,11 +3,23 @@ import React, { useState } from "react";
 import { COLORS, PERIOD_COLORS } from "../../utils/theme";
 import { PeriodHeader } from "./TeacherGrid";
 
+// Helper function to generate dynamic color based on department string
+const getDeptColor = (deptName) => {
+  if (!deptName) return "#94a3b8"; // fallback gray
+  const hash = String(deptName).split('').reduce((acc, char) => char.charCodeAt(0) + ((acc << 5) - acc), 0);
+  const hue = Math.abs(hash) % 360;
+  return `hsl(${hue}, 70%, 45%)`;
+};
+
 // Reusable Section Card for the Drag-and-Drop grid
 export const SecCard = ({ section: s, dragItem, onDragStart, togLock, setEditSection }) => {
-  const bg = s.hasConflict ? "#FFF0F0" : s.locked ? COLORS.accentLight : COLORS.white;
-  const bc = s.hasConflict ? COLORS.danger : s.locked ? COLORS.accent : COLORS.lightGray;
+  const deptColor = getDeptColor(s.department);
   
+  // Keep conflict colors if there is an issue, otherwise use the department color
+  const bg = s.hasConflict ? "#FFF0F0" : `${deptColor}15`; 
+  const borderLeftColor = s.hasConflict ? COLORS.danger : deptColor;
+  const borderOtherColor = s.hasConflict ? COLORS.danger : s.locked ? COLORS.accent : "transparent";
+
   const waveBadge = s.lunchWave ? (
     <span style={{ fontSize: 8, background: COLORS.warning, color: COLORS.text, padding: "1px 3px", borderRadius: 3, marginLeft: 4 }}>
       W{s.lunchWave}
@@ -20,9 +32,16 @@ export const SecCard = ({ section: s, dragItem, onDragStart, togLock, setEditSec
       draggable={!s.locked} 
       onDragStart={() => onDragStart(s)} 
       style={{
-        padding: "4px 6px", marginBottom: 2, borderRadius: 5, border: `1px solid ${bc}`,
-        background: bg, cursor: "pointer", fontSize: 10,
-        opacity: dragItem?.id === s.id ? 0.3 : 1, color: COLORS.text,
+        padding: "4px 6px", 
+        marginBottom: 2, 
+        borderRadius: "0 4px 4px 0", // Flat left edge for the thick border
+        border: `1px solid ${borderOtherColor}`,
+        borderLeft: `4px solid ${borderLeftColor}`,
+        background: bg, 
+        cursor: "pointer", 
+        fontSize: 10,
+        opacity: dragItem?.id === s.id ? 0.3 : 1, 
+        color: COLORS.text,
       }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span style={{ fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "75%" }}>{s.courseName}</span>
@@ -88,9 +107,32 @@ export default function MasterGrid({
           if (!isTeaching) {
             const isLunch = p.type === "unit_lunch";
             return (
-              <div key={`sa-${p.id}`} style={{ padding: "3px 4px", borderBottom: `2px solid ${COLORS.primary}`, borderRight: `1px solid ${COLORS.lightGray}`, background: isLunch ? `${COLORS.warning}15` : COLORS.offWhite, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <div 
+                key={`sa-${p.id}`} 
+                onClick={() => {
+                  setEditSection({
+                    id: `manual-${Date.now()}`,
+                    courseName: "New School-Wide Activity",
+                    period: p.id,
+                    department: "General",
+                    enrollment: studentCount,
+                    maxSize: studentCount,
+                    locked: true
+                  });
+                }}
+                style={{ 
+                  padding: "3px 4px", 
+                  borderBottom: `2px solid ${COLORS.primary}`, 
+                  borderRight: `1px solid ${COLORS.lightGray}`, 
+                  background: isLunch ? `${COLORS.warning}15` : COLORS.offWhite, 
+                  display: "flex", 
+                  alignItems: "center", 
+                  justifyContent: "center",
+                  cursor: "pointer" 
+                }}
+              >
                 <span style={{ fontSize: 9, color: isLunch ? COLORS.warning : COLORS.midGray, fontWeight: 600 }}>
-                  {isLunch ? `🥗 All ${studentCount}` : `${p.type.toUpperCase()}`}
+                  {isLunch ? `🥗 All ${studentCount}` : `${p.type.toUpperCase()} +`}
                 </span>
               </div>
             );
