@@ -103,7 +103,7 @@ export default function MasterGrid({
         </div>
         
         {allP.map(p => {
-          const isTeaching = p.type === "class" || p.type === "split_lunch";
+          const isTeaching = p.type === "class" || p.type === "split_lunch" || p.type === "multi_lunch";
           if (!isTeaching) {
             const isLunch = p.type === "unit_lunch";
             return (
