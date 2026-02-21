@@ -63,12 +63,30 @@ export default function App() {
 
   const regen = () => {
     if (!schedule) return;
+    
+    // 1. Capture locked classes to force them into specific periods
     const locked = schedule.sections.filter(s => s.locked);
     const lockConstraints = locked.map(s => ({ type: "lock_period", sectionId: s.id, period: s.period, priority: "must" }));
+    
+    // 2. Capture custom enrollment overrides so the engine respects the new sizes
+    const sizeOverrides = schedule.sections
+        .filter(s => s.enrollment !== s.maxSize) // Or any custom flag you set in the modal
+        .map(s => ({ type: "size_override", sectionId: s.id, enrollment: s.enrollment }));
+
     const result = generateSchedule({
       ...buildScheduleConfig(config),
-      constraints: [...(config.constraints || []), ...lockConstraints],
+      constraints: [...(config.constraints || []), ...lockConstraints, ...sizeOverrides],
     });
+    
+    // 3. Map the overrides back onto the generated sections before setting state
+    if (sizeOverrides.length > 0) {
+        result.sections = result.sections.map(sec => {
+            const override = sizeOverrides.find(o => o.sectionId === sec.id);
+            if (override) return { ...sec, enrollment: override.enrollment };
+            return sec;
+        });
+    }
+
     setSchedule(result);
   };
 
