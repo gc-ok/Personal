@@ -4,21 +4,20 @@ import { COLORS } from "../../utils/theme";
 import MasterGrid from "./MasterGrid";
 import TeacherGrid from "./TeacherGrid";
 import RoomGrid from "./RoomGrid";
-import { generateSchedule } from "../../core/engine"; // Imported for refactoring
+import { generateSchedule } from "../../core/engine";
 
 // --- STYLES & HELPERS ---
 const inputStyle = { width: "100%", padding: "10px", marginTop: 4, borderRadius: 6, border: `1px solid ${COLORS.lightGray}`, fontSize: 14, outline: "none" };
 
 const modalOverlayStyle = { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 };
 
-const modalContentStyle = { background: COLORS.white, padding: 24, borderRadius: 12, boxShadow: "0 20px 40px rgba(0,0,0,0.3)" };
+const modalContentStyle = { background: COLORS.white, padding: 24, borderRadius: 12, boxShadow: "0 20px 40px rgba(0,0,0,0.3)", maxHeight: "90vh", overflowY: "auto" };
 
 const btnStyle = (bg, color, disabled = false, border = "none") => ({
   background: bg, color: color, padding: "6px 14px", borderRadius: 6, border: border,
   fontWeight: 600, fontSize: 12, cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1
 });
 
-// Helper to prep config for the engine (mirrors logic in App.jsx)
 function buildScheduleConfig(config) {
   const pc = config.periodsCount || 7;
   return {
@@ -28,9 +27,9 @@ function buildScheduleConfig(config) {
     periodLength: config.periodLength || 50,
     passingTime: config.passingTime || 5,
     lunchConfig: {
-      style: config.lunchConfig?.style || config.lunchStyle || "unit", // "unit", "split", "multi_period"
-      lunchPeriod: config.lunchConfig?.lunchPeriod ?? config.lunchPeriod, // for unit/split
-      lunchPeriods: config.lunchConfig?.lunchPeriods || config.lunchPeriods || [], // for multi_period arrays like [4, 5]
+      style: config.lunchConfig?.style || config.lunchStyle || "unit",
+      lunchPeriod: config.lunchConfig?.lunchPeriod ?? config.lunchPeriod,
+      lunchPeriods: config.lunchConfig?.lunchPeriods || config.lunchPeriods || [],
       lunchDuration: config.lunchConfig?.lunchDuration || 30,
       numWaves: config.lunchConfig?.numWaves || 1,
       minClassTime: config.lunchConfig?.minClassTime || 45
@@ -81,14 +80,15 @@ const EditTeacherModal = ({ teacher, onClose, onSave }) => {
         </div>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button onClick={onClose} style={btnStyle(COLORS.lightGray, COLORS.text)}>Cancel</button>
-          <button onClick={() => onSave(formData)} style={btnStyle(COLORS.primary, COLORS.white)}>Save & Refactor Schedule</button>
+          <button onClick={() => onSave(formData)} style={btnStyle(COLORS.primary, COLORS.white)}>Save & Refactor</button>
         </div>
       </div>
     </div>
   );
 };
 
-const EditSectionModal = ({ section, schedule, onClose, onSave, onDelete }) => {
+// ADDED 'config' PROP HERE SO IT KNOWS THE SCHEDULE TYPE
+const EditSectionModal = ({ section, schedule, config, onClose, onSave, onDelete }) => {
   const [formData, setFormData] = useState({ ...section });
   const handleChange = (e) => {
     const { name, value, type, checked } = e.target;
@@ -104,11 +104,44 @@ const EditSectionModal = ({ section, schedule, onClose, onSave, onDelete }) => {
             <input name="courseName" value={formData.courseName} onChange={handleChange} style={inputStyle} />
           </label>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            
+            {/* --- DYNAMIC TERM-AWARE DROPDOWN --- */}
             <label style={{ fontSize: 11, fontWeight: 700, color: COLORS.textLight, textTransform: "uppercase" }}>Period
               <select name="period" value={formData.period} onChange={handleChange} style={inputStyle}>
-                {schedule.periodList.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+                {schedule.periodList.map(p => {
+                  if (p.type === "win" || p.type === "unit_lunch") {
+                    return <option key={p.id} value={p.id}>{p.label}</option>;
+                  }
+                  if (config?.scheduleType === "ab_block") {
+                    return (
+                      <React.Fragment key={p.id}>
+                        <option value={`A-${p.id}`}>{p.label} (A-Day)</option>
+                        <option value={`B-${p.id}`}>{p.label} (B-Day)</option>
+                      </React.Fragment>
+                    );
+                  }
+                  if (config?.scheduleType === "4x4_block") {
+                    return (
+                      <React.Fragment key={p.id}>
+                        <option value={`S1-${p.id}`}>{p.label} (Sem 1)</option>
+                        <option value={`S2-${p.id}`}>{p.label} (Sem 2)</option>
+                      </React.Fragment>
+                    );
+                  }
+                  if (config?.scheduleType === "trimester") {
+                    return (
+                      <React.Fragment key={p.id}>
+                        <option value={`T1-${p.id}`}>{p.label} (Tri 1)</option>
+                        <option value={`T2-${p.id}`}>{p.label} (Tri 2)</option>
+                        <option value={`T3-${p.id}`}>{p.label} (Tri 3)</option>
+                      </React.Fragment>
+                    );
+                  }
+                  return <option key={p.id} value={p.id}>{p.label}</option>;
+                })}
               </select>
             </label>
+
             <label style={{ fontSize: 11, fontWeight: 700, color: COLORS.textLight, textTransform: "uppercase" }}>Size
               <input type="number" name="enrollment" value={formData.enrollment} onChange={handleChange} style={inputStyle} />
             </label>
@@ -119,7 +152,7 @@ const EditSectionModal = ({ section, schedule, onClose, onSave, onDelete }) => {
                 {schedule.teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
               </select>
             </label>
-            <label style={{ fontSize: 11, fontWeight: 700, color: COLORS.textLight, textTransform: "uppercase" }}>Co-Teacher (Inclusion)
+            <label style={{ fontSize: 11, fontWeight: 700, color: COLORS.textLight, textTransform: "uppercase" }}>Co-Teacher
               <select name="coTeacher" value={formData.coTeacher || ""} onChange={handleChange} style={inputStyle}>
                 <option value="">-- None --</option>
                 {schedule.teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
@@ -170,7 +203,7 @@ const TeacherAvailabilityModal = ({ teacher, periods, teacherAvail, onClose, onS
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
           <button onClick={onClose} style={btnStyle(COLORS.lightGray, COLORS.text)}>Cancel</button>
-          <button onClick={() => onSave(blocked)} style={btnStyle(COLORS.primary, COLORS.white)}>Save Availability</button>
+          <button onClick={() => onSave(blocked)} style={btnStyle(COLORS.primary, COLORS.white)}>Save</button>
         </div>
       </div>
     </div>
@@ -185,7 +218,7 @@ const PLCOrganizerModal = ({ teachers, periods, plcGroups, onClose, onSave }) =>
 
   return (
     <div style={modalOverlayStyle}>
-      <div style={{ ...modalContentStyle, width: 800, maxHeight: '90vh', overflowY: 'auto' }}>
+      <div style={{ ...modalContentStyle, width: 800 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
           <h2 style={{ margin: 0 }}>Organize PLC Groups</h2>
           <button onClick={addGroup} style={btnStyle(COLORS.success, COLORS.white)}>+ New Group</button>
@@ -236,19 +269,14 @@ export default function ScheduleGridView({ schedule, config, setSchedule, onRege
   const [notif, setNotif] = useState(null);
   const [editSection, setEditSection] = useState(null);
 
-  // NEW STATES
-  // Initialize with the engine's generated groups if they exist
   const [plcGroups, setPlcGroups] = useState(schedule.plcGroups || []);
   const [teacherAvail, setTeacherAvail] = useState([]); 
   const [showPLCModal, setShowPLCModal] = useState(false);
   const [availTeacher, setAvailTeacher] = useState(null);
-  const [editTeacher, setEditTeacher] = useState(null); // <--- ADD THIS STATE
+  const [editTeacher, setEditTeacher] = useState(null); 
 
-  // Add this useEffect to sync the state if the schedule is regenerated externally
   useEffect(() => {
-    if (schedule.plcGroups) {
-      setPlcGroups(schedule.plcGroups);
-    }
+    if (schedule.plcGroups) setPlcGroups(schedule.plcGroups);
   }, [schedule.plcGroups]);
 
   const secs = schedule.sections || [];
@@ -276,17 +304,15 @@ export default function ScheduleGridView({ schedule, config, setSchedule, onRege
     } 
   };
 
-  // REGENERATE LOGIC - Now accepts the arrays directly to avoid stale state!
   const triggerRegenWithConstraints = (updatedPLCs = plcGroups, updatedAvail = teacherAvail, updatedTeachers = schedule.teachers) => {
     const newConfig = {
       ...config,
       plcEnabled: updatedPLCs.length > 0,
       plcGroups: updatedPLCs,
       teacherAvailability: updatedAvail,
-      teachers: updatedTeachers, // <--- PASS THE NEW TEACHERS HERE
+      teachers: updatedTeachers, 
       maxClassSize: config.maxClassSize + 1 
     };
-    
     const result = generateSchedule(buildScheduleConfig(newConfig));
     setSchedule(result);
     pushH(result.sections);
@@ -334,10 +360,9 @@ export default function ScheduleGridView({ schedule, config, setSchedule, onRege
         </div>
       )}
 
-      {/* MODAL RENDERERS */}
       {editSection && (
         <EditSectionModal
-          section={editSection} schedule={schedule} onClose={() => setEditSection(null)}
+          section={editSection} schedule={schedule} config={config} onClose={() => setEditSection(null)}
           onDelete={(id) => {
             const ns = secs.filter(s => s.id !== id);
             pushH(ns); setSchedule({ ...schedule, sections: ns }); setEditSection(null); notify("🗑️ Class removed");
@@ -346,11 +371,12 @@ export default function ScheduleGridView({ schedule, config, setSchedule, onRege
             const exists = secs.find(s => s.id === updated.id);
             const teacherObj = schedule.teachers.find(t => t.id === updated.teacher);
             updated.teacherName = teacherObj?.name || "Unassigned";
-            
-            // --- NEW: Map the Co-Teacher Name ---
             updated.coTeacherName = updated.coTeacher ? schedule.teachers.find(t => t.id === updated.coTeacher)?.name : null;
             
-            updated.period = parseInt(updated.period); updated.enrollment = parseInt(updated.enrollment);
+            // --- CRITICAL FIX: SAFELY PARSE THE PERIOD STRING ---
+            updated.period = isNaN(updated.period) ? updated.period : Number(updated.period); 
+            updated.enrollment = parseInt(updated.enrollment);
+            
             const ns = exists ? secs.map(s => s.id === updated.id ? updated : s) : [...secs, updated];
             pushH(ns); setSchedule({ ...schedule, sections: ns }); setEditSection(null); notify("✅ Schedule updated");
           }}
@@ -358,53 +384,34 @@ export default function ScheduleGridView({ schedule, config, setSchedule, onRege
       )}
 
       {editTeacher && (
-        <EditTeacherModal
-          teacher={editTeacher}
-          onClose={() => setEditTeacher(null)}
-          onSave={(updatedTeacher) => {
+        <EditTeacherModal teacher={editTeacher} onClose={() => setEditTeacher(null)} onSave={(updatedTeacher) => {
             const newTeachers = schedule.teachers.map(t => t.id === updatedTeacher.id ? updatedTeacher : t);
-            setEditTeacher(null);
-            triggerRegenWithConstraints(plcGroups, teacherAvail, newTeachers);
+            setEditTeacher(null); triggerRegenWithConstraints(plcGroups, teacherAvail, newTeachers);
           }}
         />
       )}
 
       {showPLCModal && (
-        <PLCOrganizerModal
-          teachers={schedule.teachers} periods={schedule.periodList} plcGroups={plcGroups}
-          onClose={() => setShowPLCModal(false)}
-          onSave={(newGroups) => {
-            setPlcGroups(newGroups); 
-            setShowPLCModal(false);
-            // Pass the new groups directly into the engine!
-            triggerRegenWithConstraints(newGroups, teacherAvail);
+        <PLCOrganizerModal teachers={schedule.teachers} periods={schedule.periodList} plcGroups={plcGroups} onClose={() => setShowPLCModal(false)} onSave={(newGroups) => {
+            setPlcGroups(newGroups); setShowPLCModal(false); triggerRegenWithConstraints(newGroups, teacherAvail);
           }}
         />
       )}
 
       {availTeacher && (
-        <TeacherAvailabilityModal
-          teacher={availTeacher} periods={schedule.periodList} teacherAvail={teacherAvail}
-          onClose={() => setAvailTeacher(null)}
-          onSave={(blocked) => {
+        <TeacherAvailabilityModal teacher={availTeacher} periods={schedule.periodList} teacherAvail={teacherAvail} onClose={() => setAvailTeacher(null)} onSave={(blocked) => {
             const newAvail = [...teacherAvail.filter(a => a.teacherId !== availTeacher.id), { teacherId: availTeacher.id, blockedPeriods: blocked }];
-            setTeacherAvail(newAvail); 
-            setAvailTeacher(null);
-            // Pass the new availability directly into the engine!
-            triggerRegenWithConstraints(plcGroups, newAvail);
+            setTeacherAvail(newAvail); setAvailTeacher(null); triggerRegenWithConstraints(plcGroups, newAvail);
           }}
         />
       )}
 
-      {/* ACTION BAR */}
       <div style={{ background: COLORS.white, padding: "8px 16px", borderBottom: `1px solid ${COLORS.lightGray}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={onBackToConfig} style={btnStyle(COLORS.lightGray, COLORS.text)}>← Config</button>
           <button onClick={undo} disabled={hIdx <= 0} style={btnStyle(COLORS.lightGray, COLORS.text, hIdx <= 0)}>↩ Undo</button>
           <button onClick={onRegenerate} style={btnStyle("transparent", COLORS.primary, false, `1px solid ${COLORS.primary}`)}>🔀 Quick Regen</button>
           <button onClick={addBlankClass} style={btnStyle(COLORS.success, COLORS.white)}>➕ Add Class</button>
-          
-          {/* PLC ORGANIZER BUTTON */}
           <button onClick={() => setShowPLCModal(true)} style={btnStyle(COLORS.accent, COLORS.white)}>🤝 Organize PLCs</button>
         </div>
         <div style={{ fontSize: 12, color: COLORS.textLight }}>
@@ -412,7 +419,6 @@ export default function ScheduleGridView({ schedule, config, setSchedule, onRege
         </div>
       </div>
 
-      {/* Tabs Bar */}
       <div style={{ background: COLORS.offWhite, padding: "6px 16px", borderBottom: `1px solid ${COLORS.lightGray}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ display: "flex", gap: 3, overflowX: "auto" }}>
           {viewTabs.map(v => (
@@ -432,18 +438,18 @@ export default function ScheduleGridView({ schedule, config, setSchedule, onRege
       <div style={{ flex: 1, padding: 16, overflow: "auto", background: COLORS.offWhite }}>
         {vm === "grid" && (
           <MasterGrid 
-            schedule={schedule} fSecs={fSecs} dragItem={dragItem} 
+            schedule={schedule} config={config} fSecs={fSecs} dragItem={dragItem} 
             onDragStart={onDS} onDrop={onDrop} togLock={togLock} setEditSection={setEditSection} 
           />
         )}
         {vm === "teachers" && (
           <TeacherGrid 
             schedule={schedule} config={config} fDept={fDept} setEditSection={setEditSection} 
-            onTeacherClick={(t) => setAvailTeacher(t)} // To trigger Avail modal
+            onTeacherClick={(t) => setAvailTeacher(t)} 
             onEditTeacher={(t) => setEditTeacher(t)}
           />
         )}
-        {vm === "rooms" && <RoomGrid schedule={schedule} />}
+        {vm === "rooms" && <RoomGrid schedule={schedule} config={config} />}
         {vm === "conflicts" && (
           <div>
             <h3 style={{ color: COLORS.danger }}>Identified Scheduling Conflicts</h3>
