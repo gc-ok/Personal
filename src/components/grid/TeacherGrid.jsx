@@ -2,6 +2,12 @@
 import React from "react";
 import { COLORS } from "../../utils/theme";
 
+const getDeptColor = (deptName) => {
+  const hash = String(deptName).split('').reduce((acc, char) => char.charCodeAt(0) + ((acc << 5) - acc), 0);
+  const hue = Math.abs(hash) % 360;
+  return `hsl(${hue}, 70%, 45%)`; // Dynamically generates a rich, readable color
+};
+
 // Generic Period Header Component (can be moved to a Shared file later)
 export const PeriodHeader = ({ p, isLast }) => {
   const bgMap = { class: COLORS.primary, split_lunch: COLORS.secondary, unit_lunch: COLORS.warning, win: COLORS.darkGray };
@@ -18,7 +24,7 @@ export const PeriodHeader = ({ p, isLast }) => {
   );
 };
 
-export default function TeacherGrid({ schedule, config, fDept }) {
+export default function TeacherGrid({ schedule, config, fDept, setEditSection}) {
   const { periodList: allP = [], teachers = [], sections: secs = [], teacherSchedule = {} } = schedule;
   const numWaves = config?.lunchConfig?.numWaves || 3;
 
@@ -40,6 +46,7 @@ export default function TeacherGrid({ schedule, config, fDept }) {
               const s = secs.find(x => x.teacher === t.id && x.period === p.id);
               const status = teacherSchedule?.[t.id]?.[p.id];
               const isLunch = status === "LUNCH";
+              const isPLC = status === "PLC";
               const isNT = p.type === "unit_lunch" || p.type === "win";
 
               return (
@@ -72,16 +79,60 @@ export default function TeacherGrid({ schedule, config, fDept }) {
                       })}
                     </div>
                   ) : s ? (
-                    <div style={{ width: "100%", background: COLORS.accentLight, color: COLORS.primaryDark, padding: "4px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, display: "flex", flexDirection: "column", justifyContent: "center" }}>
-                      <span>{s.courseName}</span>
-                      <span style={{ fontSize: 9, fontWeight: 400 }}>{s.roomName} · 👥{s.enrollment}</span>
+                    <div 
+                      onClick={() => setEditSection && setEditSection(s)} // <-- 1. Add click handler
+                      style={{ 
+                      width: "100%", 
+                      background: `${getDeptColor(s.department)}15`, // 15% opacity background
+                      borderLeft: `4px solid ${getDeptColor(s.department)}`, 
+                      color: COLORS.text, 
+                      padding: "4px 8px", 
+                      borderRadius: "0 4px 4px 0", 
+                      fontSize: 11, 
+                      display: "flex", 
+                      flexDirection: "column", 
+                      justifyContent: "center",
+                      cursor: "pointer"
+                    }}>
+                      <span style={{ fontWeight: 700 }}>{s.courseName}</span>
+                      <span style={{ fontSize: 9, fontWeight: 500 }}>{s.roomName} · 👥{s.enrollment}</span>
                     </div>
                   ) : isLunch ? (
                     <div style={{ width: "100%", color: COLORS.warning, fontWeight: 700, fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center" }}>🥗 LUNCH</div>
                   ) : isNT ? (
                     <div style={{ width: "100%", color: COLORS.midGray, fontSize: 10, display: "flex", alignItems: "center", justifyContent: "center" }}>{p.type.toUpperCase()}</div>
+                  ) : isPLC ? (
+                    // <-- 2. Render PLC Block
+                    <div style={{ width: "100%", color: COLORS.secondary, fontSize: 10, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", background: `${COLORS.secondary}15` }}>🤝 PLC</div>
                   ) : (
-                    <div style={{ width: "100%", color: COLORS.midGray, fontSize: 10, fontStyle: "italic", display: "flex", alignItems: "center", justifyContent: "center" }}>📝 Plan</div>
+                    // <-- 3. Render standard Plan
+                    <div 
+                      className="empty-slot-hover"
+                      onClick={() => {
+                        setEditSection({
+                          id: `manual-${Date.now()}`,
+                          courseName: "New Class",
+                          teacher: t.id,
+                          teacherName: t.name,
+                          period: p.id,
+                          department: t.departments?.[0] || "General",
+                          enrollment: 25,
+                          maxSize: 30,
+                          locked: true
+                        });
+                      }}
+                      style={{ 
+                        width: "100%", 
+                        cursor: "pointer", 
+                        display: "flex", 
+                        flexDirection: "column", 
+                        alignItems: "center", 
+                        justifyContent: "center" 
+                      }}
+                    >
+                      <div style={{ color: COLORS.midGray, fontSize: 10, fontStyle: "italic" }}>📝 Plan</div>
+                      <div style={{ color: COLORS.primary, fontSize: 14, fontWeight: "bold", marginTop: 2 }}>+</div>
+                    </div>
                   )}
                 </div>
               );
