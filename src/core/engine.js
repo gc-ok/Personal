@@ -184,36 +184,24 @@ export function generateSchedule(config) {
     teachers.forEach(t => { teacherSchedule[t.id][lunchPid] = "LUNCH"; teacherBlocked[t.id].add(lunchPid); });
   }
 
-  // 1. New Logic for Custom Teacher Availability & PLC
-  // Instead of the previous generic PLC logic, replace with:
-
-  if (plcEnabled && config.plcGroups) {
-    logger.info("Setting up Explicit PLC Groups...");
+  // --- NEW: COMMON PLC LOGIC ---
+  if (plcEnabled) {
+    logger.info("Setting up Departmental PLC blocks...");
+    const depts = [...new Set(teachers.map(t => (t.departments && t.departments[0]) || "General"))];
     
-    config.plcGroups.forEach(group => {
-      // A group looks like: { id: "math_alg1", period: 4, teacherIds: ["t1", "t2"] }
-      const plcPid = group.period;
-      group.teacherIds.forEach(tId => {
-        if (teacherSchedule[tId]) {
-          teacherSchedule[tId][plcPid] = "PLC";
-          teacherBlocked[tId].add(plcPid);
-        }
-      });
-      logger.info(`Assigned Period ${plcPid} as PLC for Group: ${group.id}`);
-    });
-  }
+    // We can only schedule PLC during actual teaching periods (not Lunch, not WIN)
+    const validPlcPeriods = periodList.filter(p => p.type === "class" || p.type === "split_lunch").map(p => p.id);
 
-  // 2. Individual Plan/Blocked Period Support
-  // Respecting "Half Days" or "Extra Plans" defined in config
-  if (config.teacherAvailability) {
-    config.teacherAvailability.forEach(avail => {
-      // avail: { teacherId: "t1", blockedPeriods: [1, 2, 7] }
-      avail.blockedPeriods.forEach(pid => {
-        if (teacherSchedule[avail.teacherId]) {
-          teacherSchedule[avail.teacherId][pid] = "BLOCKED";
-          teacherBlocked[avail.teacherId].add(pid);
-        }
+    depts.forEach((dept, index) => {
+      // Rotate PLC periods so all departments aren't off at the exact same time
+      const plcPid = validPlcPeriods[index % validPlcPeriods.length];
+      const deptTeachers = teachers.filter(t => (t.departments && t.departments[0]) === dept);
+      
+      deptTeachers.forEach(t => {
+        teacherSchedule[t.id][plcPid] = "PLC";
+        teacherBlocked[t.id].add(plcPid);
       });
+      logger.info(`Assigned Period ${plcPid} as Common PLC for ${dept} Department (${deptTeachers.length} teachers).`);
     });
   }
 
